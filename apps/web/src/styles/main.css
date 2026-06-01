@@ -1,0 +1,73 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+@import 'highlight.js/styles/github.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    @apply bg-body text-text font-sans antialiased;
+  }
+  #app {
+    min-height: 100%;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center font-semibold rounded-btn transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-1 disabled:opacity-60 disabled:pointer-events-none;
+    padding: 11px 20px;
+    font-size: 15px;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-white shadow-sm hover:bg-primary-hover hover:shadow;
+  }
+  .btn-secondary {
+    @apply btn bg-secondary text-white shadow-sm hover:bg-secondary-hover hover:shadow;
+  }
+  .btn-ghost {
+    @apply btn bg-white text-text border border-light hover:bg-light/70;
+  }
+  .btn-sm {
+    padding: 7px 14px;
+    font-size: 13.5px;
+  }
+  .input-base {
+    @apply block w-full rounded-btn border border-light bg-white px-3.5 py-2.5 text-text outline-none transition duration-150 placeholder:text-text/40 focus:border-primary focus:ring-2 focus:ring-primary/20;
+  }
+  .card {
+    @apply bg-white rounded-card border border-light/70 p-5 shadow-card;
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-card-md hover:-translate-y-0.5;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .prose-body {
+    @apply text-text leading-relaxed;
+  }
+  .prose-body p { @apply my-3; }
+  .prose-body h1 { @apply text-3xl font-bold mt-6 mb-3; }
+  .prose-body h2 { @apply text-2xl font-bold mt-5 mb-2; }
+  .prose-body h3 { @apply text-xl font-semibold mt-4 mb-2; }
+  .prose-body code { @apply bg-light px-1 py-0.5 rounded text-sm; }
+  .prose-body pre { @apply bg-secondary text-white p-3 rounded-btn overflow-x-auto; }
+  .prose-body pre code { @apply bg-transparent text-white p-0; }
+  .prose-body ul { @apply list-disc list-inside my-3; }
+  .prose-body ol { @apply list-decimal list-inside my-3; }
+  .prose-body a { @apply text-primary underline hover:text-primary-hover; }
+  .prose-body blockquote { @apply border-l-4 border-light pl-3 italic my-3; }
+}
