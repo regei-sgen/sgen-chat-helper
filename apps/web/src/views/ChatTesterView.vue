@@ -168,6 +168,16 @@ function reset() {
                         class="mt-2 rounded-btn border border-light max-h-48"
                         alt=""
                       />
+                      <a
+                        v-if="step.route"
+                        :href="step.route"
+                        target="_blank"
+                        rel="noopener"
+                        class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary border border-primary/40 rounded-full px-2 py-0.5 hover:bg-primary/5 transition-colors"
+                        :title="'Open ' + step.route"
+                      >
+                        ↗ Open <span class="font-mono">{{ step.route }}</span>
+                      </a>
                     </div>
                   </div>
                 </div>
