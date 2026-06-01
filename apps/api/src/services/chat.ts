@@ -118,24 +118,24 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
 
   let primary = result.primary;
   let supporting = result.supporting;
-  let confident = !!result.primary && result.confidence >= MIN_CONFIDENCE;
 
-  // 2) Is the local result CLEAR, or is the query "too complex / ambiguous"? Clear = the top
-  // match is confident AND clearly ahead of the runner-up → answer with ZERO AI calls. Ambiguous
-  // (several close candidates, e.g. "add a logo" matching Site Settings vs the editor vs the
-  // component library) → spend ONE AI call to judge which article actually fits the intent.
-  // Use the ACTUAL vector similarities of the top two candidates — NOT result.confidence, which
-  // falls back to a flat 0.5 baseline for keyword-only matches and would falsely look "clear".
+  // 2) Is the local result CLEAR enough to answer on its own, or do we hand it to the AI?
+  // CLEAR = a confident top vector match clearly ahead of the runner-up → answer with ZERO AI
+  // calls. Otherwise (ambiguous OR low local confidence but we DO have candidates) let the AI
+  // rerank judge which candidate actually fits. Short queries like "logo" score low on vector
+  // similarity even though the right article is in the candidate list, so a bare similarity
+  // threshold must NOT reject them — the AI is the better judge (and declines if truly irrelevant).
+  // topVec/secondVec use the ACTUAL vector similarities — NOT result.confidence, which falls back
+  // to a flat 0.5 baseline for keyword-only matches and would falsely look "clear".
+  const localConfident = !!primary && result.confidence >= MIN_CONFIDENCE;
   const topVecSim = result.candidates[0]
     ? (result.topMatches.find((m) => m.id === result.candidates[0].id)?.similarity ?? 0)
     : 0;
   const secondVecSim = result.candidates[1]
     ? (result.topMatches.find((m) => m.id === result.candidates[1].id)?.similarity ?? 0)
     : 0;
-  // Clear = a single candidate, OR the top vector match is strong AND clearly ahead of the
-  // runner-up. A pure keyword match (topVecSim ~ 0) is never "clear" — let the AI judge it.
   const clearMatch =
-    confident &&
+    localConfident &&
     (result.candidates.length === 1 ||
       (topVecSim >= CLEAR_CONFIDENCE && topVecSim - secondVecSim >= AMBIGUITY_GAP));
 
@@ -143,15 +143,15 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
   console.log(
     `[chat:gate] q=${JSON.stringify(message)} top=${topVecSim.toFixed(3)} second=${secondVecSim.toFixed(3)} ` +
       `gap=${(topVecSim - secondVecSim).toFixed(3)} cands=${result.candidates.length} clear=${clearMatch} -> ` +
-      (clearMatch ? 'LOCAL (no AI)' : confident ? 'AI rerank' : 'no-answer'),
-  );
-  console.log(
-    '[chat:gate]   candidates:',
-    result.candidates.map((a, i) => `${i + 1}.${a.feature || a.title}`).join(' | '),
+      (clearMatch ? 'LOCAL (no AI)' : result.candidates.length ? 'AI rerank' : 'no-answer'),
   );
 
-  if (confident && !clearMatch && result.candidates.length > 1) {
-    // Too ambiguous for local search alone — escalate to the AI rerank to judge intent.
+  let answered = false;
+  if (primary && clearMatch) {
+    answered = true; // confident, unambiguous local match — no AI needed
+  } else if (result.candidates.length > 0) {
+    // Not clear → let the AI pick the right article from the candidates (or decline). This is
+    // what rescues low-confidence-but-relevant queries the similarity floor would wrongly drop.
     try {
       const pickedIds = await rerankArticles(message, result.candidates);
       const byId = new Map(result.candidates.map((a) => [a.id, a]));
@@ -162,23 +162,23 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
         '[chat:rerank] picked:',
         chosen.map((a) => a.feature || a.title).join(' | ') || '(none)',
       );
-      if (pickedIds.length === 0) {
-        confident = false; // the AI judged that none of the candidates answer the question
-      } else if (chosen.length) {
+      if (chosen.length) {
         primary = chosen[0];
         supporting = chosen.slice(1, 3);
-        confident = true; // the AI vouched for this match
+        answered = true; // the AI vouched for this match
       }
+      // chosen empty → the AI judged that none of the candidates answer it → no answer.
     } catch (err) {
-      // AI unavailable — keep the local top match (the clear-match path already chose it).
+      // AI unavailable — fall back to the local top only if it clears the confidence floor.
       console.warn(
         '[chat:rerank] FAILED -> local fallback:',
         err instanceof Error ? err.message : err,
       );
+      answered = localConfident;
     }
   }
 
-  if (!primary || !confident) {
+  if (!answered || !primary) {
     return {
       reply:
         "I don't have anything in the knowledge base about that yet. Try rephrasing, or pick a topic below.",
@@ -225,21 +225,53 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
   const withSteps = articles.filter((a) => a.steps && a.steps.length > 0);
   if (withSteps.length > 0) {
     let n = 0;
+    // Each step's admin page route (e.g. "/sg-admin/settings") powers the clickable "open this
+    // page" button under the step. We look for it in two places, because the AI structurer often
+    // rewrites a step into a short summary that DROPS the literal /sg-admin/... path — but the
+    // article's VERBATIM markdown (a.content) always keeps it. So: prefer the route named in the
+    // step's own text; otherwise pull it from the matching section of the verbatim content; and
+    // for any step that still names no new page, carry forward the last page the walkthrough was on.
+    const ROUTE_RE = /\/sg-admin[a-zA-Z0-9/_-]*/;
+    // Read one route per "## " section of the verbatim markdown (our import docs are one step per
+    // section), carrying the last seen route forward. Only trusted when the section count lines up
+    // 1:1 with the step count, so it can't mis-map articles that don't follow that shape.
+    const routesFromContent = (content: string | null, count: number): (string | undefined)[] => {
+      if (!content) return [];
+      const sections = content.split(/^##\s+/m).slice(1);
+      if (sections.length !== count) return [];
+      let last: string | undefined;
+      return sections.map((sec) => {
+        const m = sec.match(ROUTE_RE);
+        if (m) last = m[0];
+        return last;
+      });
+    };
     const steps = withSteps.flatMap((a) => {
       const group = a.feature || a.title;
-      return [...a.steps]
-        .sort((s1, s2) => s1.order - s2.order)
-        .map((s) => ({
+      const ordered = [...a.steps].sort((s1, s2) => s1.order - s2.order);
+      const contentRoutes = routesFromContent(a.content, ordered.length);
+      // Seed the carry-forward with the first route found anywhere (step text, then verbatim body).
+      let route =
+        ordered.map((s) => s.content.match(ROUTE_RE)?.[0]).find(Boolean) ||
+        contentRoutes.find(Boolean) ||
+        a.content?.match(ROUTE_RE)?.[0] ||
+        undefined;
+      return ordered.map((s, i) => {
+        const found = s.content.match(ROUTE_RE)?.[0] || contentRoutes[i];
+        if (found) route = found;
+        return {
           n: (n += 1),
           title: s.title,
           body: s.content,
           group,
-          // Carry the source article's slug onto the step when present, so the client
-          // can link the step back to its knowledge-base article.
+          // Slug of the source article (links the step back to its KB article).
           slug: a.slug || undefined,
+          // The admin page this step happens on — explicit route if named, else carried forward.
+          route,
           highlight: false,
           imageUrl: s.imageUrl ?? null,
-        }));
+        };
+      });
     });
     const topics = withSteps.map((a) => a.feature || a.title);
 
