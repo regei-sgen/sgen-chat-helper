@@ -1,4 +1,6 @@
-// Switch the AI provider used for the chat router + compose (and article structuring).
+// Switch the *active* AI provider used by the chat router + compose (and relationship
+// auto-linking). NOTE: upload article structuring is NOT affected — it always runs on the local
+// Claude Code CLI (see services/structure.ts → runLocalClaude).
 // Usage:  npx tsx apps/api/scripts/set-provider.ts claude-code
 import '../src/lib/env.js';
 import {
@@ -18,7 +20,7 @@ await setSetting('structuring_model', process.argv[3] ?? null);
 // embeddingModel, which silently kills vector search. Reset to the local default.
 await setSetting('embedding_provider', null);
 console.log(
-  '[set-provider] structuring =',
+  '[set-provider] chat AI =',
   await getStructuringProvider(),
   '/',
   await getStructuringModel(),

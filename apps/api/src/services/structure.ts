@@ -1,7 +1,7 @@
 import { BadRequest } from '../lib/errors.js';
 import { StructuredArticleSchema } from '@kb/shared';
 import type { StructuredArticle } from '@kb/shared';
-import { runProvider, parseJsonResponse } from './ai.js';
+import { runLocalClaude, parseJsonResponse } from './ai.js';
 
 export type { StructuredArticle };
 
@@ -42,14 +42,15 @@ export async function structureArticle(
 
   const userPrompt = `Existing articles:\n${existingTitles.map((t) => `- ${t}`).join('\n')}\n\nExtract metadata for this markdown:\n\n---\n${rawMd}\n---`;
 
-  // The model returns metadata only and we keep the article body verbatim, so output stays
-  // small and bounded regardless of document length (no more truncated-JSON failures on big
-  // docs). 8192 tokens leaves ample headroom; retry once to absorb a rare transient hiccup.
+  // Upload structuring ALWAYS runs on the local Claude Code CLI (not the selectable chat
+  // provider): no API key, no free-tier rate limits. The model returns metadata only and we keep
+  // the article body verbatim, so output stays small and bounded regardless of document length
+  // (no more truncated-JSON failures on big docs). Retry once to absorb a rare transient hiccup.
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const text = await runProvider(SYSTEM_PROMPT, userPrompt, { maxTokens: 8192 });
-      const parsed = parseJsonResponse<Record<string, unknown>>(text, 'The AI provider');
+      const text = await runLocalClaude(SYSTEM_PROMPT, userPrompt);
+      const parsed = parseJsonResponse<Record<string, unknown>>(text, 'Local Claude Code');
       parsed.content = rawMd; // preserve the original markdown verbatim as the article content
       const result = StructuredArticleSchema.safeParse(parsed);
       if (!result.success) {

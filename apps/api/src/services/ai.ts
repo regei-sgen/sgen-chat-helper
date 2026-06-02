@@ -7,6 +7,7 @@ import {
   getActiveAnthropicKey,
   getActiveOpenAIKey,
   getActiveGeminiKey,
+  CLAUDE_CODE_STRUCTURING_MODEL,
 } from './settings.js';
 
 // Generic "ask the configured AI provider for a JSON response" helper, shared by
@@ -228,7 +229,10 @@ export async function probeClaudeCode(): Promise<string> {
 }
 
 /**
- * Run the active provider with a system + user prompt; returns raw text.
+ * Run the *active / selectable* provider with a system + user prompt; returns raw text.
+ * This is the AI the admin picks in Settings → AI Providers, and it powers the CHAT assistant
+ * (retrieval rerank + answer compose) and relationship auto-linking. It does NOT handle upload
+ * structuring — that is pinned to local Claude via `runLocalClaude` (see below).
  * `json: true` (default) asks providers for a JSON response (for structured tasks);
  * pass `json: false` for prose answers (e.g. composing a chat reply).
  */
@@ -244,6 +248,18 @@ export async function runProvider(
   if (provider === 'gemini') return callGemini(model, system, user, maxTokens, json);
   if (provider === 'claude-code') return callClaudeCode(model, system, user);
   return callAnthropic(model, system, user, maxTokens);
+}
+
+/**
+ * Run a prompt through the LOCAL Claude Code CLI, ALWAYS — regardless of the active provider
+ * selected in Settings. This is the dedicated path for the "upload using AI" feature (article
+ * structuring): uploads are intentionally pinned to local Claude so structuring never consumes
+ * API credits or hits a provider's free-tier rate limit. Requires the `claude` CLI installed &
+ * signed in on this machine — it does not run on a remote deployment. (The chat assistant stays
+ * on the selectable provider via `runProvider`.)
+ */
+export async function runLocalClaude(system: string, user: string): Promise<string> {
+  return callClaudeCode(CLAUDE_CODE_STRUCTURING_MODEL, system, user);
 }
 
 /** Parse a model's JSON response, tolerating code fences. Throws BadRequest on failure. */

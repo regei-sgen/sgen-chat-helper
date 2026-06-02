@@ -338,10 +338,13 @@ async function reembed() {
         </div>
       </div>
 
-      <!-- Structuring -->
+      <!-- Active chat AI -->
       <div class="space-y-2 border-t border-light pt-4">
-        <div class="text-sm font-medium">Article structuring</div>
-        <p class="text-xs text-text/60">Which AI turns uploaded markdown into a structured article.</p>
+        <div class="text-sm font-medium">Chat assistant AI</div>
+        <p class="text-xs text-text/60">
+          Which AI answers questions in the chat (retrieval rerank + composing the reply) and
+          organizes article links. Pick the active provider here.
+        </p>
         <Select
           :model-value="structuringProvider"
           :options="structuringProviderOptions"
@@ -359,6 +362,10 @@ async function reembed() {
           rate limits. Model accepts <code>sonnet</code>, <code>opus</code>, or <code>haiku</code>.
           Runs only on this machine (where Claude Code is installed &amp; signed in); it won't work
           on a remote deployment.
+        </p>
+        <p class="text-xs text-text/60">
+          <strong>Uploads</strong> always use your local <strong>Claude Code</strong> to structure
+          articles — no API key needed, and this selector does not change it.
         </p>
       </div>
 
@@ -387,9 +394,12 @@ async function reembed() {
       <!-- Status -->
       <div v-if="aiStatus" class="rounded-btn bg-light p-3 text-sm space-y-2">
         <div class="text-text/70">
-          Structuring:
+          Chat AI:
           <span class="text-text font-medium">{{ aiStatus.structuringProvider }}</span>
           ({{ aiStatus.structuringModel }})
+        </div>
+        <div class="text-text/70">
+          Uploads: <span class="text-text font-medium">claude-code</span> (local, always)
         </div>
         <div class="text-text/70">
           Embeddings:

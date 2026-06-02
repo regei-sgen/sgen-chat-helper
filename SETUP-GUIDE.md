@@ -138,7 +138,7 @@ npx tsx apps/api/scripts/set-provider.ts claude-code
 ```
 Expected output:
 ```
-[set-provider] structuring = claude-code / sonnet | embeddings = local / Xenova/all-MiniLM-L6-v2
+[set-provider] chat AI = claude-code / sonnet | embeddings = local / Xenova/all-MiniLM-L6-v2
 ```
 > This also resets embeddings to **local MiniLM**. **Do not use Gemini** (see §6).
 
@@ -174,6 +174,11 @@ make run
 
 The provider is stored in the DB (`Setting` table). Three values matter:
 `structuring_provider`, `structuring_model`, `embedding_provider`.
+
+> **`structuring_provider` is the *active chat AI*** — it controls the chat assistant (retrieval
+> rerank + answer compose) and relationship auto-linking. **Uploads ignore it:** article
+> structuring on upload always runs on the local Claude Code CLI (no API key), so uploads keep
+> working even if the chat provider is set to something else.
 
 | Provider | Use it? | Why |
 |---|---|---|
