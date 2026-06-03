@@ -118,6 +118,12 @@ function groupHasRoute(g: StepGroup): boolean {
   return g.steps.some((s) => !!s.route);
 }
 
+// Steps imported from KB cards carry the same single sentence in both title and body, so when
+// they match we render just the (markdown-formatted) body line and skip the duplicate title.
+function sameTitleBody(s: WalkthroughStep): boolean {
+  return (s.title ?? '').trim() === (s.body ?? '').trim();
+}
+
 async function goToGroupStep(m: Msg, g: StepGroup, n: number) {
   if (!m.groupActive) m.groupActive = {};
   m.groupActive[g.key] = Math.min(Math.max(n, 1), g.steps.length);
@@ -266,14 +272,21 @@ function reset() {
                         class="flex-none w-5 h-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center mt-0.5"
                       >{{ idx + 1 }}</span>
                       <div class="min-w-0">
-                        <p class="text-sm font-semibold leading-snug">
-                          {{ s.title }}
+                        <p
+                          v-if="!sameTitleBody(s) || s.highlight"
+                          class="text-sm font-semibold leading-snug"
+                        >
+                          <template v-if="!sameTitleBody(s)">{{ s.title }}</template>
                           <span
                             v-if="s.highlight"
                             class="ml-1 align-middle text-[10px] font-semibold text-white bg-primary rounded-full px-1.5 py-0.5"
                           >most relevant</span>
                         </p>
-                        <div class="prose-body text-sm text-text/80" v-html="renderMarkdown(s.body)" />
+                        <div
+                          class="prose-body text-sm"
+                          :class="sameTitleBody(s) ? 'font-medium' : 'text-text/80'"
+                          v-html="renderMarkdown(s.body)"
+                        />
                         <img
                           v-if="s.imageUrl"
                           :src="s.imageUrl"
@@ -333,14 +346,21 @@ function reset() {
                         class="flex-none w-5 h-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center mt-0.5"
                       >{{ idx + 1 }}</span>
                       <div class="min-w-0">
-                        <p class="text-sm font-semibold leading-snug">
-                          {{ s.title }}
+                        <p
+                          v-if="!sameTitleBody(s) || s.highlight"
+                          class="text-sm font-semibold leading-snug"
+                        >
+                          <template v-if="!sameTitleBody(s)">{{ s.title }}</template>
                           <span
                             v-if="s.highlight"
                             class="ml-1 align-middle text-[10px] font-semibold text-white bg-primary rounded-full px-1.5 py-0.5"
                           >most relevant</span>
                         </p>
-                        <div class="prose-body text-sm text-text/80" v-html="renderMarkdown(s.body)" />
+                        <div
+                          class="prose-body text-sm"
+                          :class="sameTitleBody(s) ? 'font-medium' : 'text-text/80'"
+                          v-html="renderMarkdown(s.body)"
+                        />
                         <img
                           v-if="s.imageUrl"
                           :src="s.imageUrl"
