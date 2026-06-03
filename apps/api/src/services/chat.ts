@@ -11,12 +11,48 @@ const MIN_CONFIDENCE = 0.18;
 // Raise these to call the AI more often (safer); lower them to use AI less (cheaper).
 const CLEAR_CONFIDENCE = 0.35;
 const AMBIGUITY_GAP = 0.08;
+// A STRONG absolute top match (e.g. the user typed an exact/near-exact article title) answers
+// directly even when the runner-up sits close behind — many cards share a template ("Who can access
+// X?") so their siblings are always near in embedding space, and that template-noise gap must NOT
+// turn an exact hit into a "pick one" chooser.
+const STRONG_CONFIDENCE = 0.45;
+// When there is NO clear single winner, but several articles are plausibly relevant, the bot shows
+// them ALL as "multiple results" (KB-grounded, no AI) instead of guessing one — this both serves
+// users who'd rather choose, and degrades gracefully when the AI rerank is unavailable. A candidate
+// counts as "plausible" at >= MULTI_RESULT_FLOOR vector similarity; at most MULTI_RESULT_MAX shown.
+const MULTI_RESULT_FLOOR = 0.3;
+const MULTI_RESULT_MAX = 3;
 
-const COMPOSE_SYSTEM = `You are the SGEN Help Assistant. Answer the user's question using ONLY the provided Knowledge Base Article(s) — do not use outside knowledge or invent features, menu paths, or steps.
+// ---- Deterministic multi-topic ("how do I add pages and blogs") detection — NO AI ----
+// A query that joins DISTINCT topics with a conjunction is answered one-article-per-topic instead of
+// collapsing to whichever single topic the blended query vector ranked highest. Comparison questions
+// ("difference between X and Y") are NOT split — the KB answers those with their own "difference" card.
+const COMPARISON_RE = /\b(difference between|compare|versus|vs\.?)\b/i;
+const ACTION_RE =
+  /\b(add|create|new|set ?up|setup|edit|delete|remove|find|use|open|manage|configure|publish|upload|change|enable|install|build|make|schedule|export|import)\b/i;
 
-You may be given more than one article. Use every article that is relevant to the question and ignore any that are not. If the question asks about multiple things (a "combination" question, e.g. "how do I add blogs and pages"), answer each part from its matching article under its own short markdown heading.
+function splitTopics(q: string): string[] {
+  if (COMPARISON_RE.test(q)) return [];
+  const parts = q
+    .split(/\s+(?:and|&|plus|also|as well as)\s+|,\s*/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2);
+  return parts.length >= 2 ? parts : [];
+}
 
-Be warm and concise. Lead with the direct answer. When an article lists steps, present them as a numbered list. Use the articles' exact menu paths and terms. If the provided articles do not actually answer the question, say you don't have that information yet and suggest where in SGEN to look or to rephrase. End with a line: "Source: <the article title(s) you used>". Format in markdown.`;
+// Carry the first fragment's leading action stem ("how to add") onto bare trailing fragments
+// ("blogs too" → "how to add blogs") so each fragment searches WITH its verb, not as a bare noun —
+// which markedly improves the per-fragment match (measured: bare "blogs too" mis-hit a comparison
+// card; "how to add blogs" hit "How do I add a new blog?").
+function expandFragments(frags: string[]): string[] {
+  const m = frags[0].match(
+    /^(.*?\b(?:add|create|new|set ?up|setup|edit|delete|remove|find|use|open|manage|configure|publish|upload|change|enable|install|build|make|schedule|export|import))\b/i,
+  );
+  const stem = m ? m[1].trim() : '';
+  return frags.map((f, i) =>
+    i === 0 || !stem || ACTION_RE.test(f) ? f : `${stem} ${f.replace(/\btoo\b/i, '').trim()}`,
+  );
+}
 
 // The retrieval JUDGE: given the question + candidate articles, pick which ACTUALLY answer it.
 // This is the "analyze → get the right knowledge" stage — local search has good recall but
@@ -49,16 +85,44 @@ async function rerankArticles(
     .filter((id) => candidates.some((c) => c.id === id));
 }
 
-function historyText(history?: ChatMessage[]): string {
-  if (!history?.length) return '';
-  return (
-    'Recent conversation:\n' +
-    history
-      .slice(-6)
-      .map((m) => `${m.role}: ${m.content}`)
-      .join('\n') +
-    '\n\n'
+// A short, readable topic name from an article — its `feature` if set, else the title stripped of
+// the question scaffolding ("How do I set up Events?" → "Events"; "Why isn't the New Page screen
+// working?" → "New Page screen"). Keeps multi-topic prose/headers from reading like full questions.
+function topicLabel(title: string, feature: string | null): string {
+  if (feature && feature.trim()) return feature.trim();
+  let t = title.trim().replace(/\?+$/, '');
+  t = t.replace(
+    /^(how do i|how to|what(?:'s| is)|who can access|where (?:do i find|is)|why isn'?t|can i|is|do i)\s+/i,
+    '',
   );
+  t = t.replace(/^(find and use|set ?up|add a new|add|create|open|manage|configure|use)\s+/i, '');
+  t = t.replace(/^the\s+/i, '');
+  t = t.replace(/\s+working$/i, '');
+  return t.trim() || title;
+}
+
+// Join topic names into readable prose: "A", "A and B", "A, B and C". De-dupe upstream so this
+// never renders a repeated list like "Users, Users and Users".
+function fmtList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+// Make a KB article read as a conversational answer WITHOUT an AI call: drop the markdown title
+// heading, the "**Short answer:**" line (it just repeats the summary we already lead with), bare
+// doc-link lines (the chat surfaces those as buttons already), and any trailing "Source:" line.
+// Everything else (the actual explanation / "Reach it from …" guidance) is kept verbatim.
+function articleBody(content: string | null): string {
+  if (!content) return '';
+  const kept = content.split('\n').filter((raw) => {
+    const line = raw.trim();
+    if (/^#{1,6}\s/.test(line)) return false; // markdown heading
+    if (/^\*\*short answer:?\*\*/i.test(line)) return false; // duplicate of the summary
+    if (/^\[[^\]]+\]\([^)]+\)$/.test(line)) return false; // standalone [label](url) link line
+    if (/^source\s*:/i.test(line)) return false; // redundant with the source pills the UI renders
+    return true;
+  });
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export interface ChatResult {
@@ -83,7 +147,9 @@ async function starterFollowups(): Promise<{ label: string; message: string }[]>
   return articles.map((a) => ({ label: a.feature || a.title, message: a.title }));
 }
 
-export async function chat(message: string, history?: ChatMessage[]): Promise<ChatResult> {
+// `_history` (recent conversation) is accepted for the call signature but currently unused — it was
+// only consumed by the removed AI compose; the deterministic answer paths don't need it.
+export async function chat(message: string, _history?: ChatMessage[]): Promise<ChatResult> {
   const trimmed = message.trim();
 
   // Fast path: greetings / thanks need neither the AI nor the KB. This also keeps the
@@ -118,6 +184,32 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
 
   let primary = result.primary;
   let supporting = result.supporting;
+  let answered = false;
+
+  // 1b) DETERMINISTIC MULTI-TOPIC (no AI). If the message joins distinct topics with a conjunction,
+  // search EACH topic separately and, when they resolve to DIFFERENT confident articles, answer each
+  // — so "how do I add pages and blogs" answers BOTH, instead of collapsing to the single topic the
+  // blended query vector ranked highest. Only runs when a (non-comparison) conjunction is present, so
+  // ordinary single-topic queries skip it entirely.
+  const topicFrags = splitTopics(message);
+  if (topicFrags.length >= 2) {
+    const perTopic = await Promise.all(expandFragments(topicFrags).map((f) => hybridSearch(f)));
+    const seen = new Set<string>();
+    const picked: typeof result.candidates = [];
+    for (const res of perTopic) {
+      const p = res.primary;
+      if (p && (res.confidence ?? 0) >= MIN_CONFIDENCE && !seen.has(p.id)) {
+        seen.add(p.id);
+        picked.push(p);
+      }
+    }
+    if (picked.length >= 2) {
+      primary = picked[0];
+      supporting = picked.slice(1, 3); // answer up to 3 topics
+      answered = true;
+      console.log('[chat:multitopic] topics ->', picked.map((a) => a.feature || a.title).join(' | '));
+    }
+  }
 
   // 2) Is the local result CLEAR enough to answer on its own, or do we hand it to the AI?
   // CLEAR = a confident top vector match clearly ahead of the runner-up → answer with ZERO AI
@@ -137,6 +229,7 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
   const clearMatch =
     localConfident &&
     (result.candidates.length === 1 ||
+      topVecSim >= STRONG_CONFIDENCE ||
       (topVecSim >= CLEAR_CONFIDENCE && topVecSim - secondVecSim >= AMBIGUITY_GAP));
 
   // Gate telemetry: shows whether a query was answered locally (free) or escalated to the AI.
@@ -146,10 +239,44 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
       (clearMatch ? 'LOCAL (no AI)' : result.candidates.length ? 'AI rerank' : 'no-answer'),
   );
 
-  let answered = false;
-  if (primary && clearMatch) {
-    answered = true; // confident, unambiguous local match — no AI needed
-  } else if (result.candidates.length > 0) {
+  // AMBIGUOUS → MULTIPLE RESULTS (no AI). If there's no clear single winner but several articles are
+  // plausibly relevant, show them all and let the user pick — rather than confidently answering from
+  // one possibly-wrong article (e.g. "Who can access Sites?" matching "…Site Settings"). This is
+  // KB-grounded and needs zero AI, so it works even while the AI rerank provider is rate-limited.
+  if (!answered && !clearMatch) {
+    const plausible = result.candidates
+      .map((c) => ({ c, sim: result.topMatches.find((m) => m.id === c.id)?.similarity ?? 0 }))
+      .filter((x) => x.sim >= MULTI_RESULT_FLOOR)
+      .slice(0, MULTI_RESULT_MAX);
+    if (plausible.length >= 2) {
+      const picks = plausible.map((x) => x.c);
+      console.log('[chat:multi] offering:', picks.map((p) => p.feature || p.title).join(' | '));
+      const body = picks
+        .map((p) => `**${p.title}**${p.summary ? ` — ${p.summary.trim()}` : ''}`)
+        .join('\n\n');
+      const srcSeen = new Set<string>();
+      return {
+        reply: `I found a few things that might match — tap the closest:\n\n${body}`,
+        usedKnowledgeBase: true,
+        sources: picks
+          .filter((p) => !srcSeen.has(p.id) && (srcSeen.add(p.id), true))
+          .map((p) => ({ title: p.title, slug: p.slug })),
+        links: [],
+        followups: picks.map((p) => ({ label: p.feature || p.title, message: p.title })),
+        confidence: plausible[0].sim,
+        matchedId: null,
+      };
+    }
+  }
+
+  if (!answered && primary && clearMatch) {
+    // Confident, unambiguous local match → answer from this ONE article with no AI. Drop any
+    // search-derived `supporting`: a clear match is always single-article. (Genuine multi-topic
+    // questions are caught by the conjunction split above; this single-collapse only applies when
+    // that didn't fire.) Collapsing here keeps articles.length===1.
+    supporting = [];
+    answered = true;
+  } else if (!answered && result.candidates.length > 0) {
     // Not clear → let the AI pick the right article from the candidates (or decline). This is
     // what rescues low-confidence-but-relevant queries the similarity floor would wrongly drop.
     try {
@@ -169,23 +296,33 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
       }
       // chosen empty → the AI judged that none of the candidates answer it → no answer.
     } catch (err) {
-      // AI unavailable — fall back to the local top only if it clears the confidence floor.
+      // AI unavailable — fall back to the local top ALONE (drop supporting) if it clears the
+      // confidence floor. Collapsing supporting keeps articles.length===1 so we answer directly
+      // from the KB instead of attempting a second, equally-doomed compose call on the dead provider.
       console.warn(
         '[chat:rerank] FAILED -> local fallback:',
         err instanceof Error ? err.message : err,
       );
+      supporting = [];
       answered = localConfident;
     }
   }
 
   if (!answered || !primary) {
+    // No confident answer. Offer the CLOSEST near-misses — the top search candidates that didn't
+    // clear the bar — so the suggestions relate to what the user typed; fall back to starter topics
+    // only when the search surfaced nothing at all. Either way: zero AI calls.
+    const nearMisses = result.candidates
+      .slice(0, 4)
+      .map((c) => ({ label: c.feature || c.title, message: c.title }));
     return {
-      reply:
-        "I don't have anything in the knowledge base about that yet. Try rephrasing, or pick a topic below.",
+      reply: nearMisses.length
+        ? "I don't have a direct answer for that yet — did you mean one of these?"
+        : "I don't have anything in the knowledge base about that yet. Try rephrasing, or pick a topic below.",
       usedKnowledgeBase: false,
       sources: [],
       links: [],
-      followups: await starterFollowups(),
+      followups: nearMisses.length ? nearMisses : await starterFollowups(),
       confidence: result.confidence ?? null,
       matchedId: null,
     };
@@ -247,7 +384,7 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
       });
     };
     const steps = withSteps.flatMap((a) => {
-      const group = a.feature || a.title;
+      const group = topicLabel(a.title, a.feature);
       const ordered = [...a.steps].sort((s1, s2) => s1.order - s2.order);
       const contentRoutes = routesFromContent(a.content, ordered.length);
       // Seed the carry-forward with the first route found anywhere (step text, then verbatim body).
@@ -273,7 +410,8 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
         };
       });
     });
-    const topics = withSteps.map((a) => a.feature || a.title);
+    // De-dupe so several matched articles sharing one feature don't render "Users, Users, Users".
+    const topics = [...new Set(withSteps.map((a) => topicLabel(a.title, a.feature)))];
 
     // Intent scoping: find the step(s) whose text best covers the user's DISTINCTIVE
     // keywords, so we can take them straight to the part they asked about (e.g. "logo")
@@ -299,7 +437,10 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
         steps.forEach((s, i) => {
           if (scored[i] === best) s.highlight = true;
         });
-        focusStep = steps.find((s) => s.highlight)?.n;
+        // Only JUMP to the step for a single-topic walkthrough. The client reveals every step up
+        // to focusStep, so in a multi-topic (combination) flow that would expose all of an earlier
+        // topic's steps — there we just badge the most-relevant step and leave focusStep unset.
+        if (withSteps.length === 1) focusStep = steps.find((s) => s.highlight)?.n;
       }
     }
 
@@ -311,11 +452,10 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
     };
     let reply =
       topics.length > 1
-        ? `You asked about ${topics.length} things — ${topics.join(', ')}. I'll walk you through each one, step by step. Hit Next to move through them.`
-        : withSteps[0].summary?.trim() ||
-          `Here's how to ${topics[0]}. I'll walk you through it one step at a time — hit Next to move through each step.`;
+        ? `Here's how to ${fmtList(topics)}.`
+        : withSteps[0].summary?.trim() || `Here's how to ${topics[0]}.`;
     if (focusStep) {
-      reply += `\n\nThe part you're asking about is **step ${focusStep}** — I've taken you there. Use Next for the rest.`;
+      reply += `\n\nThe part you asked about is in **step ${focusStep}** — I've started you there.`;
     }
     return {
       reply,
@@ -329,42 +469,29 @@ export async function chat(message: string, history?: ChatMessage[]): Promise<Ch
     };
   }
 
-  // 3b) Otherwise (no structured steps) compose a grounded prose answer from the
-  // retrieved article(s). For a combination question, every relevant article is included.
-  const stepsOf = (a: (typeof articles)[number]) =>
-    (a.steps || []).map((s, i) => `${i + 1}. ${s.title} — ${s.content}`).join('\n');
-
-  const kb = articles
-    .map((a, i) =>
-      [
-        `--- Knowledge Base Article ${i + 1} ---`,
-        `Title: ${a.title}`,
-        `Summary: ${a.summary ?? ''}`,
-        `Article:\n${a.content}`,
-        stepsOf(a) && `Steps:\n${stepsOf(a)}`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    )
-    .join('\n\n');
+  // 3b) None of the matched articles are step-based. Answer DIRECTLY from the KB — ZERO AI — whether
+  // one article or several:
+  //   • ONE article  → conversational summary + cleaned body.
+  //   • MULTIPLE (a combination question) → each topic under its own heading, from its own article.
+  // A small helper turns one article into its conversational lead + cleaned body (no duplicate
+  // summary, no bare doc-link lines, no "Source:" trailer — the UI shows source pills).
+  const articleAnswer = (a: (typeof articles)[number]): string => {
+    const lead = a.summary?.trim() ?? '';
+    let body = articleBody(a.content);
+    if (lead && body.startsWith(lead)) body = body.slice(lead.length).trim();
+    return [lead, body].filter(Boolean).join('\n\n');
+  };
 
   let reply: string;
-  try {
-    reply = (
-      await runProvider(
-        COMPOSE_SYSTEM,
-        `${historyText(history)}User question: "${message}"\n\nKnowledge Base Article(s):\n${kb}\n\nWrite the answer now.`,
-        { maxTokens: 1024, json: false },
+  if (articles.length === 1) {
+    reply = articleAnswer(primary) || primary.title;
+  } else {
+    // Combination answer, grounded one topic per article — no AI, no provider dependency.
+    reply = articles
+      .map((a) =>
+        [`## ${topicLabel(a.title, a.feature)}`, articleAnswer(a)].filter(Boolean).join('\n\n'),
       )
-    ).trim();
-  } catch {
-    // AI composition failed (e.g. provider rate limit) — fall back to the article(s) themselves.
-    reply =
-      (articles.length === 1
-        ? [primary.summary, stepsOf(primary)].filter(Boolean).join('\n\n')
-        : articles
-            .map((a) => [`**${a.title}**`, a.summary, stepsOf(a)].filter(Boolean).join('\n\n'))
-            .join('\n\n')) + `\n\nSource: ${articles.map((a) => a.title).join(', ')}`;
+      .join('\n\n');
   }
 
   return {

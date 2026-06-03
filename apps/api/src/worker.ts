@@ -8,7 +8,7 @@ console.log('[worker] starting upload processor...');
 const worker = new Worker<UploadJobPayload, unknown, string>(
   UPLOAD_QUEUE_NAME,
   async (job) => {
-    const { jobId, filename, content, authorId, autoPublish } = job.data;
+    const { jobId, filename, content, authorId, autoPublish, asIs } = job.data;
 
     const dbJob = await prisma.uploadJob.findUnique({ where: { id: jobId } });
     if (dbJob && dbJob.status === 'PENDING') {
@@ -19,7 +19,7 @@ const worker = new Worker<UploadJobPayload, unknown, string>(
     }
 
     try {
-      const result = await processSingleMarkdown({ content, authorId, autoPublish });
+      const result = await processSingleMarkdown({ content, authorId, autoPublish, asIs, filename });
       await recordJobProgress(jobId, 'completed');
       return { ok: true, articleId: result.articleId };
     } catch (err) {

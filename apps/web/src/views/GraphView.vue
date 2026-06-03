@@ -7,6 +7,7 @@ import GraphView from '@/components/GraphView.vue';
 import Select from '@/components/Select.vue';
 import Button from '@/components/Button.vue';
 import AutoLinkButton from '@/components/AutoLinkButton.vue';
+import VectorLinkButton from '@/components/VectorLinkButton.vue';
 import { Maximize, ArrowRight } from 'lucide-vue-next';
 import { PRODUCT_AREA_LABELS, type GraphNode, type GraphResponse } from '@kb/shared';
 import { ApiError } from '@/api/client';
@@ -62,6 +63,7 @@ function onSelectNode(node: GraphNode) {
           @update:model-value="(v) => (highlightArea = v)"
         />
         <AutoLinkButton @applied="load" />
+        <VectorLinkButton @applied="load" />
         <Button variant="ghost" size="sm" @click="openFull">
           <Maximize :size="14" class="mr-1.5" />Full screen
         </Button>

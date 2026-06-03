@@ -7,6 +7,7 @@ import ArticleList from '@/components/ArticleList.vue';
 import Button from '@/components/Button.vue';
 import Select from '@/components/Select.vue';
 import AutoLinkButton from '@/components/AutoLinkButton.vue';
+import VectorLinkButton from '@/components/VectorLinkButton.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -75,6 +76,35 @@ async function runBulk(action: BulkAction) {
   }
 }
 
+// "Publish all" / "Delete all": act on EVERY article matching the current filter (store.total),
+// server-side — NOT just the rows loaded on this page. The server reads the same filter the list
+// is showing, so the action's scope matches exactly what the count claims.
+const VERB: Record<BulkAction, string> = {
+  publish: 'Publish',
+  draft: 'Move to Draft',
+  archive: 'Archive',
+  delete: 'Delete',
+};
+async function runBulkAll(action: BulkAction) {
+  if (store.total === 0) return;
+  const scope = status.value ? `${status.value.toLowerCase()} ` : '';
+  const tail = action === 'delete' ? ' This cannot be undone.' : '';
+  if (!window.confirm(`${VERB[action]} ALL ${store.total} ${scope}article(s) matching this filter?${tail}`)) {
+    return;
+  }
+  bulkBusy.value = true;
+  bulkMsg.value = null;
+  try {
+    const result = await store.bulkAll(action);
+    selected.value = [];
+    bulkMsg.value = `${result.affected} article(s) ${BULK_LABELS[action]}.`;
+  } catch (err) {
+    bulkMsg.value = err instanceof Error ? err.message : 'Bulk action failed';
+  } finally {
+    bulkBusy.value = false;
+  }
+}
+
 const tabs: Array<{ label: string; value: ArticleStatus | null }> = [
   { label: 'All', value: null },
   { label: 'Drafts', value: 'DRAFT' },
@@ -122,6 +152,7 @@ function goPage(p: number) {
       <h1 class="text-2xl font-semibold">Articles</h1>
       <div class="flex gap-2">
         <AutoLinkButton @applied="reload" />
+        <VectorLinkButton @applied="reload" />
         <Button variant="ghost" size="sm" @click="router.push('/articles/upload')">
           Upload markdown
         </Button>
@@ -175,6 +206,32 @@ function goPage(p: number) {
         />
         Select page
       </label>
+    </div>
+
+    <!-- Whole-filter actions: apply to ALL store.total matches, not just the loaded page. -->
+    <div
+      v-if="store.total > 0"
+      class="card mb-3 flex flex-wrap items-center gap-2 bg-light/40"
+    >
+      <span class="text-sm text-text/70">
+        <strong>{{ store.total }}</strong>
+        {{ status ? tabs.find((t) => t.value === status)?.label.toLowerCase() : '' }} article(s)
+        match this filter
+      </span>
+      <div class="flex flex-wrap gap-2 ml-auto">
+        <Button variant="ghost" size="sm" :loading="bulkBusy" @click="runBulkAll('publish')">
+          Publish all ({{ store.total }})
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          class="text-danger"
+          :loading="bulkBusy"
+          @click="runBulkAll('delete')"
+        >
+          Delete all ({{ store.total }})
+        </Button>
+      </div>
     </div>
 
     <div

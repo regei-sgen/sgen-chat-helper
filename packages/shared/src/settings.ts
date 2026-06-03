@@ -15,6 +15,7 @@ export const SettingsUpdateSchema = z
     geminiApiKey: z.string().optional(),
     structuringProvider: StructuringProviderSchema.optional(),
     structuringModel: z.string().optional(),
+    autolinkProvider: StructuringProviderSchema.optional(),
     embeddingProvider: EmbeddingProviderSchema.optional(),
   })
   .refine((d) => Object.keys(d).length > 0, { message: 'No settings provided' });
@@ -33,6 +34,8 @@ export const SettingsStatusSchema = z.object({
   gemini: ProviderStatusSchema,
   structuringProvider: StructuringProviderSchema,
   structuringModel: z.string(),
+  autolinkProvider: StructuringProviderSchema,
+  autolinkModel: z.string(),
   embeddingProvider: EmbeddingProviderSchema,
   activeEmbeddingModel: z.string(),
   embeddings: z.object({

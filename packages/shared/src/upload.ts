@@ -5,6 +5,7 @@ import {
   DifficultySchema,
   ArticleStatusSchema,
 } from './enums.js';
+import { ArticleCreateSchema } from './article.js';
 
 export const UploadJobStatusSchema = z.object({
   id: z.string(),
@@ -18,8 +19,17 @@ export const UploadJobStatusSchema = z.object({
 });
 export type UploadJobStatus = z.infer<typeof UploadJobStatusSchema>;
 
+// Multipart form values arrive as strings. z.coerce.boolean() is WRONG for them — it uses JS
+// Boolean(), so the string "false" coerces to TRUE (any non-empty string is truthy). Parse the
+// literal "true"/"false" instead so a value of "false" reads as false.
+const formBoolean = z.preprocess(
+  (v) => v === true || String(v).toLowerCase() === 'true',
+  z.boolean(),
+);
 export const UploadOptionsSchema = z.object({
-  autoPublish: z.coerce.boolean().default(false),
+  autoPublish: formBoolean.default(false),
+  // "Upload as is": store the markdown verbatim with no AI structuring.
+  asIs: formBoolean.default(false),
 });
 export type UploadOptions = z.infer<typeof UploadOptionsSchema>;
 
@@ -72,6 +82,10 @@ export type DuplicateCandidate = z.infer<typeof DuplicateCandidateSchema>;
 export const AnalyzeResponseSchema = z.object({
   structured: StructuredArticleSchema,
   candidates: z.array(DuplicateCandidateSchema),
+  // Set when the upload is a reference KB card (rich frontmatter): the fully-parsed article input,
+  // so /apply can persist every frontmatter field (search_aliases, entry_kind, app_url, offers, …)
+  // losslessly instead of flattening it through the AI StructuredArticle shape.
+  card: ArticleCreateSchema.optional(),
 });
 export type AnalyzeResponse = z.infer<typeof AnalyzeResponseSchema>;
 
@@ -84,8 +98,11 @@ export const ApplyRequestSchema = z
     action: ApplyActionSchema,
     targetId: z.string().optional(),
     autoPublish: z.boolean().default(false),
+    // When present (reference KB card), /apply ingests this directly — upserting by kbId — so all
+    // frontmatter fields are persisted; `structured` is ignored on this path.
+    card: ArticleCreateSchema.optional(),
   })
-  .refine((d) => d.action !== 'override' || Boolean(d.targetId), {
+  .refine((d) => d.action !== 'override' || Boolean(d.targetId) || Boolean(d.card), {
     message: 'targetId is required when action is "override"',
   });
 export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;

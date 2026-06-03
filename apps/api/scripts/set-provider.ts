@@ -1,6 +1,7 @@
-// Switch the *active* AI provider used by the chat router + compose (and relationship
-// auto-linking). NOTE: upload article structuring is NOT affected — it always runs on the local
-// Claude Code CLI (see services/structure.ts → runLocalClaude).
+// Switch the *active* AI provider used by the chat router + compose. NOTE: this does NOT affect
+// upload article structuring (always the local Claude Code CLI — see services/structure.ts →
+// runLocalClaude) nor the knowledge-graph Link Arranger (its own `autolink_provider` setting,
+// which defaults to local Claude Code — see services/settings.ts → getAutolinkProvider).
 // Usage:  npx tsx apps/api/scripts/set-provider.ts claude-code
 import '../src/lib/env.js';
 import {

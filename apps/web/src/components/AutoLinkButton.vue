@@ -110,8 +110,8 @@ async function applyDirectly() {
         </div>
         <p class="text-xs text-text/60">
           <strong>Preview</strong> lets you review the proposed links before saving.
-          <strong>Apply directly</strong> saves immediately. (This uses your configured AI
-          provider.)
+          <strong>Apply directly</strong> saves immediately. (Uses local Claude by default —
+          change the Link Arranger provider in Settings → AI Providers.)
         </p>
       </div>
 

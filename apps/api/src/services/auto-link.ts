@@ -1,6 +1,6 @@
 import type { AutoLinkProposal } from '@kb/shared';
 import { prisma } from '../lib/prisma.js';
-import { runProvider, parseJsonResponse } from './ai.js';
+import { runAutolinkProvider, parseJsonResponse } from './ai.js';
 
 const MAX_PREREQ = 3;
 const MAX_RELATED = 4;
@@ -102,7 +102,7 @@ export async function analyzeRelationships(): Promise<{
     tags: a.tags.map((t) => t.name),
   }));
 
-  const text = await runProvider(
+  const text = await runAutolinkProvider(
     SYSTEM,
     `Articles:\n${JSON.stringify(list)}\n\nReturn the JSON arrangement now.`,
   );

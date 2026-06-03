@@ -62,6 +62,25 @@ model Article {
   embeddingModel String?
   duplicateOf    String?
   duplicateScore Float?
+
+  // ---- Imported KB-card frontmatter (reference-format ingestion) ----
+  // All dynamic strings (NOT enums) so new pillars/intents/statuses in future datasets need no
+  // migration. `frontmatter` keeps the ENTIRE original YAML block verbatim as a lossless catch-all
+  // for any field we don't promote to a typed column.
+  kbId          String?                      @unique  // source kb_id — stable identity for idempotent re-ingest
+  question      String?                               // canonical user question (drives recall + answer heading)
+  entryKind     String?                               // question|concept|journey|gap|dev|pm|support|meta
+  intent        String?                               // how|what|can|compare|cost|fix|where|add|... (open set)
+  productPillar String?                               // SG-Admin|SG-Builder|SG-Dashboard (dynamic, scalable)
+  classification String?                              // PUBLIC|... (visibility tier)
+  surveyStatus  String?                               // route-verified|fact-safe|live-verified-<date>|...
+  appUrl        String?                               // in-app deep link (e.g. /sg-admin/custom_fonts)
+  docCanonical  String?                               // external docs URL (https://docs.sgen.com/...)
+  searchAliases String[]                     @default([])  // alternate phrasings — the recall engine
+  offers        String[]                     @default([])  // upsell keys, prefix:param grammar (addSuite:Forms)
+  similarTopics String[]                     @default([])  // "you might also ask about"
+  frontmatter   Json?                                 // full original frontmatter, lossless
+
   author        User                         @relation(fields: [authorId], references: [id])
   authorId      String
   createdAt     DateTime                     @default(now())
@@ -71,6 +90,8 @@ model Article {
   @@index([productArea])
   @@index([embeddingModel])
   @@index([duplicateOf])
+  @@index([entryKind])
+  @@index([productPillar])
 }
 
 enum ProductArea {

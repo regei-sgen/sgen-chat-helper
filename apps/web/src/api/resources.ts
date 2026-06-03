@@ -14,6 +14,8 @@ import type {
   ArticleUpdateInput,
   BulkAction,
   BulkArticleResult,
+  BulkAllFilter,
+  BulkAllResult,
   ApiKey,
   ApiKeyCreatedResponse,
   AuthResponse,
@@ -63,29 +65,49 @@ export const articleApi = {
     request<Article>(`/articles/${id}/publish`, { method: 'POST' }),
   restructure: (id: string) =>
     request<{ structured: unknown }>(`/articles/${id}/restructure`, { method: 'POST' }),
-  uploadSingle: (file: File, autoPublish: boolean) => {
+  uploadSingle: (file: File, autoPublish: boolean, asIs = false) => {
     const fd = new FormData();
-    fd.append('file', file);
+    // Append scalar fields BEFORE the file: the server reads them via `data.fields`, which only
+    // holds parts seen before the file in the multipart stream.
     fd.append('autoPublish', String(autoPublish));
+    fd.append('asIs', String(asIs));
+    fd.append('file', file);
     return request<{ article: Article; structured: unknown }>('/articles/upload', {
       method: 'POST',
       body: fd,
       isFormData: true,
     });
   },
-  uploadBulk: (files: File[], autoPublish: boolean) => {
+  // One chunk of a bulk upload. The first chunk omits `jobId` and sends `expectedTotal` (the grand
+  // total) so the server sizes the job to the whole import; later chunks pass the returned `jobId`.
+  uploadBulkChunk: (
+    files: File[],
+    opts: { autoPublish: boolean; asIs: boolean; jobId?: string; expectedTotal?: number },
+  ) => {
     const fd = new FormData();
+    if (opts.jobId) fd.append('jobId', opts.jobId);
+    if (opts.expectedTotal != null) fd.append('expectedTotal', String(opts.expectedTotal));
+    fd.append('autoPublish', String(opts.autoPublish));
+    fd.append('asIs', String(opts.asIs));
     for (const f of files) fd.append('files', f);
-    fd.append('autoPublish', String(autoPublish));
     return request<{ jobId: string; total: number }>('/articles/upload-bulk', {
       method: 'POST',
       body: fd,
       isFormData: true,
     });
   },
+  // Reconcile a chunked job's total to the count actually enqueued (and complete it if everything
+  // already processed). Call once, after all chunks are sent.
+  finalizeBulk: (jobId: string, total: number) =>
+    request<UploadJobStatus>(`/articles/upload-bulk/${jobId}/finalize`, {
+      method: 'POST',
+      body: { total },
+    }),
   jobStatus: (id: string) => request<UploadJobStatus>(`/articles/jobs/${id}`),
-  analyze: (file: File) => {
+  analyze: (file: File, asIs = false) => {
     const fd = new FormData();
+    // Field before file — see uploadSingle note.
+    fd.append('asIs', String(asIs));
     fd.append('file', file);
     return request<AnalyzeResponse>('/articles/analyze', {
       method: 'POST',
@@ -98,7 +120,64 @@ export const articleApi = {
     request<Article>(`/articles/${id}/resolve-duplicate`, { method: 'POST', body: { action } }),
   bulk: (ids: string[], action: BulkAction) =>
     request<BulkArticleResult>('/articles/bulk', { method: 'POST', body: { ids, action } }),
+  // Apply an action to EVERY article matching `filter` (not just the loaded page).
+  bulkAll: (action: BulkAction, filter: BulkAllFilter) =>
+    request<BulkAllResult>('/articles/bulk-all', { method: 'POST', body: { action, filter } }),
 };
+
+// Small batches keep every request far under the multipart `parts` limit and make a big import
+// resilient (a hiccup costs one chunk, not the whole upload). Easy to tune.
+const BULK_CHUNK_SIZE = 20;
+
+export interface BulkUploadCallbacks {
+  onJobCreated?: (jobId: string) => void;
+  onProgress?: (enqueued: number, total: number) => void;
+}
+
+// Upload many markdown files reliably by splitting them into small chunks that all feed ONE tracked
+// job. The first chunk creates the job sized to the full import; the rest append; a final reconcile
+// completes it. Returns the jobId and how many files actually got enqueued.
+export async function uploadMarkdownBulk(
+  files: File[],
+  autoPublish: boolean,
+  asIs: boolean,
+  cb: BulkUploadCallbacks = {},
+): Promise<{ jobId: string; enqueued: number; failedToUpload: number }> {
+  const total = files.length;
+  if (total === 0) throw new Error('No files to upload');
+
+  const chunks: File[][] = [];
+  for (let i = 0; i < files.length; i += BULK_CHUNK_SIZE) {
+    chunks.push(files.slice(i, i + BULK_CHUNK_SIZE));
+  }
+
+  // First chunk creates the job (sized to the whole import) so progress + completion are correct
+  // from the very first poll.
+  const first = await articleApi.uploadBulkChunk(chunks[0], { autoPublish, asIs, expectedTotal: total });
+  const { jobId } = first;
+  let enqueued = chunks[0].length;
+  cb.onJobCreated?.(jobId);
+  cb.onProgress?.(enqueued, total);
+
+  // Remaining chunks append to the same job. Retry a failed chunk once, then skip it (the finalize
+  // step reconciles the total so the job can still complete).
+  for (let c = 1; c < chunks.length; c++) {
+    let sent = false;
+    for (let attempt = 0; attempt < 2 && !sent; attempt++) {
+      try {
+        await articleApi.uploadBulkChunk(chunks[c], { autoPublish, asIs, jobId });
+        sent = true;
+        enqueued += chunks[c].length;
+      } catch {
+        // retried once; if it still fails we skip this chunk and reconcile below
+      }
+    }
+    cb.onProgress?.(enqueued, total);
+  }
+
+  await articleApi.finalizeBulk(jobId, enqueued).catch(() => {});
+  return { jobId, enqueued, failedToUpload: total - enqueued };
+}
 
 export const autoLinkApi = {
   preview: () =>
@@ -108,6 +187,15 @@ export const autoLinkApi = {
       method: 'POST',
       body: proposals ? { proposals } : undefined,
     }),
+};
+
+// No-AI Link Arranger: connects articles by stored-embedding similarity. Apply recomputes
+// server-side (deterministic), so the client never posts proposals — and it only ADDS related links.
+export const vectorLinkApi = {
+  preview: () =>
+    request<AutoLinkPreviewResponse>('/articles/auto-link/vector/preview', { method: 'POST' }),
+  apply: () =>
+    request<AutoLinkApplyResponse>('/articles/auto-link/vector/apply', { method: 'POST' }),
 };
 
 export const chatTesterApi = {

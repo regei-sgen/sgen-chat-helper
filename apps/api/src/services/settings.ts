@@ -23,7 +23,7 @@ const OPENAI_KEY = 'openai_api_key';
 const GEMINI_KEY = 'gemini_api_key';
 const STRUCTURING_PROVIDER_KEY = 'structuring_provider';
 const STRUCTURING_MODEL_KEY = 'structuring_model';
-const EMBEDDING_PROVIDER_KEY = 'embedding_provider';
+const AUTOLINK_PROVIDER_KEY = 'autolink_provider';
 const SECRET_KEYS = new Set([ANTHROPIC_KEY, OPENAI_KEY, GEMINI_KEY]);
 
 // Short TTL so the separate worker process picks up changes made via the API
@@ -123,10 +123,27 @@ export async function getStructuringModel(): Promise<string> {
   return override || defaultStructuringModel(await getStructuringProvider());
 }
 
+// ---- auto-link (knowledge-graph Link Arranger) ----
+// Independent of the chat provider. Defaults to local Claude Code (no API key, no free-tier rate
+// limits), but is overridable in Settings → AI Providers. The model is the provider's own default.
+export async function getAutolinkProvider(): Promise<StructuringProvider> {
+  const v = await getRaw(AUTOLINK_PROVIDER_KEY);
+  return v === 'anthropic' || v === 'openai' || v === 'gemini' || v === 'claude-code'
+    ? v
+    : 'claude-code';
+}
+
+export async function getAutolinkModel(): Promise<string> {
+  return defaultStructuringModel(await getAutolinkProvider());
+}
+
 // ---- embedding ----
 export async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
-  const v = await getRaw(EMBEDDING_PROVIDER_KEY);
-  return v === 'openai' || v === 'gemini' ? v : 'local';
+  // LOCKED to the local MiniLM model. Remote providers (OpenAI/Gemini) both rate-limit (429) AND
+  // change the vector dimensionality, which silently breaks search against the stored MiniLM
+  // vectors. Hard-locking here means an upload can NEVER fail on an embedding quota again — the
+  // stored `embedding_provider` setting (if any) is intentionally ignored.
+  return 'local';
 }
 
 export async function getActiveEmbeddingModel(): Promise<string> {
@@ -145,15 +162,25 @@ function providerStatus(resolved: ResolvedKey) {
 }
 
 export async function getSettingsStatus() {
-  const [anthropic, openai, gemini, embeddingProvider, structuringProvider, structuringModel] =
-    await Promise.all([
-      resolve(ANTHROPIC_KEY, env.ANTHROPIC_API_KEY),
-      resolve(OPENAI_KEY, process.env.OPENAI_API_KEY),
-      resolve(GEMINI_KEY, process.env.GEMINI_API_KEY),
-      getEmbeddingProvider(),
-      getStructuringProvider(),
-      getStructuringModel(),
-    ]);
+  const [
+    anthropic,
+    openai,
+    gemini,
+    embeddingProvider,
+    structuringProvider,
+    structuringModel,
+    autolinkProvider,
+    autolinkModel,
+  ] = await Promise.all([
+    resolve(ANTHROPIC_KEY, env.ANTHROPIC_API_KEY),
+    resolve(OPENAI_KEY, process.env.OPENAI_API_KEY),
+    resolve(GEMINI_KEY, process.env.GEMINI_API_KEY),
+    getEmbeddingProvider(),
+    getStructuringProvider(),
+    getStructuringModel(),
+    getAutolinkProvider(),
+    getAutolinkModel(),
+  ]);
   const activeEmbeddingModel =
     embeddingProvider === 'openai'
       ? OPENAI_EMBED_MODEL
@@ -172,6 +199,8 @@ export async function getSettingsStatus() {
     gemini: providerStatus(gemini),
     structuringProvider,
     structuringModel,
+    autolinkProvider,
+    autolinkModel,
     embeddingProvider,
     activeEmbeddingModel,
     embeddings: {

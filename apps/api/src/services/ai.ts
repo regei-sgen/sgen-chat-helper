@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
+import type { StructuringProvider } from '@kb/shared';
 import { BadRequest } from '../lib/errors.js';
 import {
   getStructuringProvider,
   getStructuringModel,
+  getAutolinkProvider,
+  getAutolinkModel,
   getActiveAnthropicKey,
   getActiveOpenAIKey,
   getActiveGeminiKey,
@@ -228,11 +231,28 @@ export async function probeClaudeCode(): Promise<string> {
   return out.trim().split('\n')[0] || 'claude';
 }
 
+// Route a resolved (provider, model) pair to the matching SDK/CLI call. Shared by every
+// selectable-provider entry point below so the dispatch table lives in exactly one place.
+function dispatch(
+  provider: StructuringProvider,
+  model: string,
+  system: string,
+  user: string,
+  maxTokens: number,
+  json: boolean,
+): Promise<string> {
+  if (provider === 'openai') return callOpenAI(model, system, user, maxTokens, json);
+  if (provider === 'gemini') return callGemini(model, system, user, maxTokens, json);
+  if (provider === 'claude-code') return callClaudeCode(model, system, user);
+  return callAnthropic(model, system, user, maxTokens);
+}
+
 /**
- * Run the *active / selectable* provider with a system + user prompt; returns raw text.
- * This is the AI the admin picks in Settings → AI Providers, and it powers the CHAT assistant
- * (retrieval rerank + answer compose) and relationship auto-linking. It does NOT handle upload
- * structuring — that is pinned to local Claude via `runLocalClaude` (see below).
+ * Run the *active / selectable* CHAT provider with a system + user prompt; returns raw text.
+ * This is the AI the admin picks in Settings → AI Providers under "Chat assistant AI", and it
+ * powers the CHAT assistant (retrieval rerank + answer compose). It does NOT handle upload
+ * structuring (pinned to local Claude via `runLocalClaude`) nor the knowledge-graph Link Arranger
+ * (its own provider via `runAutolinkProvider`).
  * `json: true` (default) asks providers for a JSON response (for structured tasks);
  * pass `json: false` for prose answers (e.g. composing a chat reply).
  */
@@ -244,10 +264,23 @@ export async function runProvider(
   const maxTokens = opts.maxTokens ?? 4096;
   const json = opts.json ?? true;
   const [provider, model] = await Promise.all([getStructuringProvider(), getStructuringModel()]);
-  if (provider === 'openai') return callOpenAI(model, system, user, maxTokens, json);
-  if (provider === 'gemini') return callGemini(model, system, user, maxTokens, json);
-  if (provider === 'claude-code') return callClaudeCode(model, system, user);
-  return callAnthropic(model, system, user, maxTokens);
+  return dispatch(provider, model, system, user, maxTokens, json);
+}
+
+/**
+ * Run the knowledge-graph Link Arranger (relationship auto-linking) provider; returns raw text.
+ * Independent of the chat provider: defaults to local Claude Code (no API key / rate limits) but
+ * is overridable in Settings → AI Providers. See `getAutolinkProvider`.
+ */
+export async function runAutolinkProvider(
+  system: string,
+  user: string,
+  opts: { maxTokens?: number; json?: boolean } = {},
+): Promise<string> {
+  const maxTokens = opts.maxTokens ?? 4096;
+  const json = opts.json ?? true;
+  const [provider, model] = await Promise.all([getAutolinkProvider(), getAutolinkModel()]);
+  return dispatch(provider, model, system, user, maxTokens, json);
 }
 
 /**

@@ -6,6 +6,9 @@ export const GraphNodeSchema = z.object({
   label: z.string(),
   slug: z.string(),
   productArea: ProductAreaSchema.nullable(),
+  // Free-form reference pillar (e.g. "SG-Admin", "SG-Dashboard"). The graph colors by this because
+  // it's the populated field — productArea (the strict enum) is null for reference KB cards.
+  productPillar: z.string().nullable(),
   difficulty: DifficultySchema.nullable(),
   status: ArticleStatusSchema,
 });

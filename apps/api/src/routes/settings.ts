@@ -95,6 +95,9 @@ export async function settingsRoutes(app: FastifyInstance) {
     if (body.structuringModel !== undefined) {
       await setSetting('structuring_model', body.structuringModel.trim() || null);
     }
+    if (body.autolinkProvider !== undefined) {
+      await setSetting('autolink_provider', body.autolinkProvider);
+    }
     if (body.embeddingProvider !== undefined) {
       await setSetting('embedding_provider', body.embeddingProvider);
     }

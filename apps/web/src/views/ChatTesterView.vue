@@ -14,7 +14,11 @@ interface Msg {
   links?: { label: string; url: string }[];
   followups?: { label: string; message: string }[];
   walkthrough?: Walkthrough | null;
-  revealed?: number;
+  // A combined ("multi-topic") question renders ONE stepper per topic. `groupActive[topic]` is the
+  // active 1-based step within that topic's stepper; `seenEnd` latches when a single-topic
+  // walkthrough is finished (multi-topic shows its trailing links immediately).
+  groupActive?: Record<string, number>;
+  seenEnd?: boolean;
 }
 
 const messages = ref<Msg[]>([]);
@@ -59,7 +63,9 @@ async function send(text: string) {
       links: r.links,
       followups: r.followups,
       walkthrough: r.walkthrough ?? null,
-      revealed: r.walkthrough ? (r.walkthrough.focusStep ?? 1) : 0,
+      // One stepper per topic; a single-topic walkthrough jumps to the most-relevant step.
+      groupActive: r.walkthrough ? initGroupActive(r.walkthrough) : undefined,
+      seenEnd: r.walkthrough ? singleTopicStartsDone(r.walkthrough) : false,
     });
   } catch (err) {
     messages.value.push({
@@ -72,28 +78,101 @@ async function send(text: string) {
   }
 }
 
-// --- Interactive walkthrough helpers (client reveals one step at a time) ---
-function shownSteps(m: Msg) {
-  return m.walkthrough ? m.walkthrough.steps.slice(0, m.revealed ?? 0) : [];
+// --- Per-topic steppers --------------------------------------------------------------------------
+// A combined question ("create a page AND a blog AND upload an image") merges steps from several
+// articles, each tagged with a `group` (topic). We render ONE stepper per topic, renumbered 1..k
+// within that topic — never one continuous 1..N rail across unrelated topics (which is misleading).
+interface StepGroup {
+  key: string;
+  label: string | null; // topic header — only shown when there's more than one topic
+  steps: WalkthroughStep[];
 }
-function stepCount(m: Msg): number {
-  return m.walkthrough?.steps.length ?? 0;
+
+function groupsOf(m: Msg): StepGroup[] {
+  if (!m.walkthrough) return [];
+  const order: string[] = [];
+  const byKey = new Map<string, WalkthroughStep[]>();
+  for (const s of m.walkthrough.steps) {
+    const key = s.group ?? '';
+    let arr = byKey.get(key);
+    if (!arr) {
+      arr = [];
+      byKey.set(key, arr);
+      order.push(key);
+    }
+    arr.push(s);
+  }
+  const multi = order.length >= 2;
+  return order.map((key) => ({ key, label: multi ? key || null : null, steps: byKey.get(key) ?? [] }));
 }
-function tourDone(m: Msg): boolean {
-  return !m.walkthrough || (m.revealed ?? 0) >= m.walkthrough.steps.length;
+
+// Active 1-based step WITHIN a topic's stepper.
+function groupActive(m: Msg, key: string): number {
+  return m.groupActive?.[key] ?? 1;
 }
-async function advance(m: Msg) {
-  if (!m.walkthrough) return;
-  if ((m.revealed ?? 0) < m.walkthrough.steps.length) m.revealed = (m.revealed ?? 0) + 1;
+
+// A topic backed by an admin page (any step carries a /sg-admin route → an "Open page" link) gets
+// the interactive click-through stepper. An info-only topic with no page link isn't a navigable
+// admin tour, so it's shown as a plain numbered list instead (clearer, not misleading).
+function groupHasRoute(g: StepGroup): boolean {
+  return g.steps.some((s) => !!s.route);
+}
+
+async function goToGroupStep(m: Msg, g: StepGroup, n: number) {
+  if (!m.groupActive) m.groupActive = {};
+  m.groupActive[g.key] = Math.min(Math.max(n, 1), g.steps.length);
+  // Latch "finished" once every stepper topic has reached its last step (list topics are always
+  // "done"). Gates the single-topic trailing content.
+  if (groupsOf(m).every((gr) => !groupHasRoute(gr) || groupActive(m, gr.key) >= gr.steps.length))
+    m.seenEnd = true;
   await scrollDown();
 }
-// Show a topic header above the first step of each group, but only when the walkthrough
-// actually combines more than one topic (a multi-topic / combination question).
-function showGroupHeader(m: Msg, step: WalkthroughStep): boolean {
-  if (!m.walkthrough || !step.group) return false;
-  const groups = new Set(m.walkthrough.steps.map((s) => s.group).filter(Boolean));
-  if (groups.size < 2) return false;
-  return m.walkthrough.steps.find((s) => s.group === step.group)?.n === step.n;
+
+// Rail dot styling: completed = check, current = solid + ringed, upcoming = light outline.
+function dotClass(active: number, n: number): string {
+  if (n === active) return 'bg-primary text-white ring-2 ring-primary/40';
+  if (n < active) return 'bg-primary/80 text-white';
+  return 'bg-white border border-light text-text/50 hover:border-primary/50';
+}
+
+// Multi-topic shows its trailing links/sources/follow-ups immediately (the steppers are independent);
+// single-topic reveals them once the user has reached the end (latched via seenEnd).
+function tourDone(m: Msg): boolean {
+  if (!m.walkthrough) return true;
+  const groups = groupsOf(m);
+  if (groups.length >= 2) return true;
+  const g = groups[0];
+  // A single info-only topic renders as a plain list (everything shown) → done immediately.
+  if (!g || !groupHasRoute(g)) return true;
+  return !!m.seenEnd;
+}
+
+// Initial active step per topic. Single-topic jumps to focusStep (its within-group position); each
+// topic of a multi-topic answer starts at step 1.
+function initGroupActive(w: Walkthrough): Record<string, number> {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  for (const s of w.steps) {
+    const key = s.group ?? '';
+    if (!seen.has(key)) {
+      seen.add(key);
+      order.push(key);
+    }
+  }
+  const active: Record<string, number> = {};
+  for (const key of order) active[key] = 1;
+  if (order.length === 1 && w.focusStep) {
+    const steps = w.steps.filter((s) => (s.group ?? '') === order[0]);
+    const pos = steps.findIndex((s) => s.n === w.focusStep);
+    if (pos >= 0) active[order[0]] = pos + 1;
+  }
+  return active;
+}
+
+function singleTopicStartsDone(w: Walkthrough): boolean {
+  const groups = new Set(w.steps.map((s) => s.group ?? ''));
+  if (groups.size >= 2) return false;
+  return (w.focusStep ?? 1) >= w.steps.length;
 }
 
 function reset() {
@@ -136,67 +215,152 @@ function reset() {
           <div class="bg-light/60 rounded-card rounded-bl-sm px-4 py-3 max-w-[88%] space-y-2">
             <div class="prose-body text-sm" v-html="renderMarkdown(m.content)" />
 
-            <!-- Interactive walkthrough: reveal ONE step at a time, each with a Next button. -->
-            <div v-if="m.walkthrough" class="space-y-2 pt-1">
-              <template v-for="step in shownSteps(m)" :key="step.n">
+            <!-- Multi-topic: one INDEPENDENT stepper per topic, each renumbered 1..k within itself. -->
+            <div v-if="m.walkthrough" class="space-y-4 pt-1">
+              <div v-for="g in groupsOf(m)" :key="g.key" class="space-y-2">
+                <!-- topic header (only when the answer combines more than one topic) -->
                 <p
-                  v-if="showGroupHeader(m, step)"
-                  class="text-[11px] font-semibold text-primary uppercase tracking-wide pt-1"
+                  v-if="g.label"
+                  class="text-[11px] font-semibold text-primary uppercase tracking-wide"
                 >
-                  {{ step.group }}
+                  {{ g.label }}
                 </p>
-                <div
-                  class="rounded-card border bg-white px-3 py-2"
-                  :class="step.highlight ? 'border-primary ring-1 ring-primary/30' : 'border-light'"
-                >
-                  <div class="flex items-start gap-2">
+
+                <!-- Topics tied to an admin page get the click-through stepper; info-only topics
+                     (no "Open page" link) render as a plain numbered list (see v-else below). -->
+                <template v-if="groupHasRoute(g)">
+                <!-- per-topic progress rail (numbered 1..k within this topic). Wraps onto multiple
+                     rows when a topic has many steps — never a horizontal scrollbar. -->
+                <div class="flex flex-wrap items-center gap-y-1 pb-1">
+                  <template v-for="(s, idx) in g.steps" :key="s.n">
                     <span
-                      class="flex-none w-5 h-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center mt-0.5"
-                    >{{ step.n }}</span>
-                    <div class="min-w-0">
-                      <p class="text-sm font-semibold leading-snug">
-                        {{ step.title }}
-                        <span
-                          v-if="step.highlight"
-                          class="ml-1 align-middle text-[10px] font-semibold text-white bg-primary rounded-full px-1.5 py-0.5"
-                        >most relevant</span>
-                      </p>
-                      <div class="prose-body text-sm text-text/80" v-html="renderMarkdown(step.body)" />
-                      <img
-                        v-if="step.imageUrl"
-                        :src="step.imageUrl"
-                        class="mt-2 rounded-btn border border-light max-h-48"
-                        alt=""
-                      />
-                      <a
-                        v-if="step.route"
-                        :href="step.route"
-                        target="_blank"
-                        rel="noopener"
-                        class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary border border-primary/40 rounded-full px-2 py-0.5 hover:bg-primary/5 transition-colors"
-                        :title="'Open ' + step.route"
-                      >
-                        ↗ Open <span class="font-mono">{{ step.route }}</span>
-                      </a>
+                      v-if="idx > 0"
+                      class="h-0.5 w-4 flex-none"
+                      :class="idx + 1 <= groupActive(m, g.key) ? 'bg-primary' : 'bg-light'"
+                    />
+                    <button
+                      type="button"
+                      class="flex-none w-6 h-6 rounded-full text-[11px] font-semibold flex items-center justify-center transition-colors"
+                      :class="dotClass(groupActive(m, g.key), idx + 1)"
+                      :title="s.title"
+                      @click="goToGroupStep(m, g, idx + 1)"
+                    >
+                      <span v-if="idx + 1 < groupActive(m, g.key)">✓</span>
+                      <span v-else>{{ idx + 1 }}</span>
+                    </button>
+                  </template>
+                  <span class="ml-3 flex-none text-[11px] text-text/50 whitespace-nowrap">
+                    Step {{ groupActive(m, g.key) }} of {{ g.steps.length }}
+                  </span>
+                </div>
+
+                <!-- active step content for this topic -->
+                <template v-for="(s, idx) in g.steps" :key="'c' + s.n">
+                  <div
+                    v-if="idx + 1 === groupActive(m, g.key)"
+                    class="rounded-card border bg-white px-3 py-2"
+                    :class="s.highlight ? 'border-primary ring-1 ring-primary/30' : 'border-light'"
+                  >
+                    <div class="flex items-start gap-2">
+                      <span
+                        class="flex-none w-5 h-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center mt-0.5"
+                      >{{ idx + 1 }}</span>
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold leading-snug">
+                          {{ s.title }}
+                          <span
+                            v-if="s.highlight"
+                            class="ml-1 align-middle text-[10px] font-semibold text-white bg-primary rounded-full px-1.5 py-0.5"
+                          >most relevant</span>
+                        </p>
+                        <div class="prose-body text-sm text-text/80" v-html="renderMarkdown(s.body)" />
+                        <img
+                          v-if="s.imageUrl"
+                          :src="s.imageUrl"
+                          class="mt-2 rounded-btn border border-light max-h-48"
+                          alt=""
+                        />
+                        <a
+                          v-if="s.route"
+                          :href="s.route"
+                          target="_blank"
+                          rel="noopener"
+                          class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary border border-primary/40 rounded-full px-2 py-0.5 hover:bg-primary/5 transition-colors"
+                          :title="'Open ' + s.route"
+                        >
+                          ↗ Open page
+                        </a>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </template>
+                </template>
 
-              <div class="flex items-center gap-3 pt-0.5">
-                <button
-                  v-if="!tourDone(m)"
-                  class="text-xs font-medium bg-primary text-white rounded-full px-4 py-1.5 hover:bg-primary/90 transition-colors"
-                  @click="advance(m)"
-                >
-                  Next step →
-                </button>
-                <span v-else class="text-xs text-green-600 font-medium">
-                  ✓ Done — all {{ stepCount(m) }} steps.
-                </span>
-                <span v-if="!tourDone(m)" class="text-[11px] text-text/50">
-                  Step {{ m.revealed }} of {{ stepCount(m) }}
-                </span>
+                <!-- per-topic Back / Next -->
+                <div class="flex items-center gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    class="text-xs font-medium border border-light rounded-full px-3 py-1.5 transition-colors hover:bg-light disabled:opacity-40 disabled:cursor-not-allowed"
+                    :disabled="groupActive(m, g.key) <= 1"
+                    @click="goToGroupStep(m, g, groupActive(m, g.key) - 1)"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    v-if="groupActive(m, g.key) < g.steps.length"
+                    type="button"
+                    class="text-xs font-medium bg-primary text-white rounded-full px-4 py-1.5 hover:bg-primary/90 transition-colors"
+                    @click="goToGroupStep(m, g, groupActive(m, g.key) + 1)"
+                  >
+                    Next →
+                  </button>
+                  <span v-else class="text-xs text-green-600 font-medium">
+                    ✓ All {{ g.steps.length }} steps.
+                  </span>
+                </div>
+                </template>
+
+                <!-- Info-only topic (no admin page link): show every step at once as a plain
+                     numbered list — no progress rail, no Back/Next. -->
+                <template v-else>
+                  <div
+                    v-for="(s, idx) in g.steps"
+                    :key="'l' + s.n"
+                    class="rounded-card border bg-white px-3 py-2"
+                    :class="s.highlight ? 'border-primary ring-1 ring-primary/30' : 'border-light'"
+                  >
+                    <div class="flex items-start gap-2">
+                      <span
+                        class="flex-none w-5 h-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center mt-0.5"
+                      >{{ idx + 1 }}</span>
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold leading-snug">
+                          {{ s.title }}
+                          <span
+                            v-if="s.highlight"
+                            class="ml-1 align-middle text-[10px] font-semibold text-white bg-primary rounded-full px-1.5 py-0.5"
+                          >most relevant</span>
+                        </p>
+                        <div class="prose-body text-sm text-text/80" v-html="renderMarkdown(s.body)" />
+                        <img
+                          v-if="s.imageUrl"
+                          :src="s.imageUrl"
+                          class="mt-2 rounded-btn border border-light max-h-48"
+                          alt=""
+                        />
+                        <a
+                          v-if="s.route"
+                          :href="s.route"
+                          target="_blank"
+                          rel="noopener"
+                          class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary border border-primary/40 rounded-full px-2 py-0.5 hover:bg-primary/5 transition-colors"
+                          :title="'Open ' + s.route"
+                        >
+                          ↗ Open page
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                </template>
               </div>
             </div>
 

@@ -75,6 +75,20 @@ export const ArticleSchema = z.object({
   authorId: z.string(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
+  // ---- Imported KB-card frontmatter (reference-format ingestion) ----
+  kbId: z.string().nullable().optional(),
+  question: z.string().nullable().optional(),
+  entryKind: z.string().nullable().optional(),
+  intent: z.string().nullable().optional(),
+  productPillar: z.string().nullable().optional(),
+  classification: z.string().nullable().optional(),
+  surveyStatus: z.string().nullable().optional(),
+  appUrl: z.string().nullable().optional(),
+  docCanonical: z.string().nullable().optional(),
+  searchAliases: z.array(z.string()).default([]),
+  offers: z.array(z.string()).default([]),
+  similarTopics: z.array(z.string()).default([]),
+  frontmatter: z.unknown().nullable().optional(),
   steps: z.array(StepSchema).default([]),
   tags: z.array(TagSchema).default([]),
   category: CategorySchema.nullable().optional(),
@@ -102,6 +116,23 @@ export const ArticleCreateSchema = z.object({
   tags: z.array(z.string()).default([]),
   prerequisiteIds: z.array(z.string()).default([]),
   relatedIds: z.array(z.string()).default([]),
+  // ---- Imported KB-card frontmatter (reference-format ingestion) ----
+  // appUrl is an in-app deep link (often scheme-less, e.g. "/sg-admin/x") so it is NOT .url()-validated.
+  kbId: z.string().nullable().optional(),
+  question: z.string().nullable().optional(),
+  entryKind: z.string().nullable().optional(),
+  intent: z.string().nullable().optional(),
+  productPillar: z.string().nullable().optional(),
+  classification: z.string().nullable().optional(),
+  surveyStatus: z.string().nullable().optional(),
+  appUrl: z.string().nullable().optional(),
+  docCanonical: z.string().nullable().optional(),
+  // Optional frontmatter extras (only reference KB cards supply these); createArticle coalesces
+  // a missing value to []. Kept optional so existing ArticleCreateInput literals stay valid.
+  searchAliases: z.array(z.string()).optional(),
+  offers: z.array(z.string()).optional(),
+  similarTopics: z.array(z.string()).optional(),
+  frontmatter: z.unknown().nullable().optional(),
 });
 export type ArticleCreateInput = z.infer<typeof ArticleCreateSchema>;
 
@@ -143,3 +174,28 @@ export const BulkArticleResultSchema = z.object({
   failed: z.array(z.object({ id: z.string(), message: z.string() })),
 });
 export type BulkArticleResult = z.infer<typeof BulkArticleResultSchema>;
+
+// ---- "All matching the current filter" bulk actions (NOT capped by pagination or a 200-id list) ----
+// Used by "Publish all" / "Delete all": the action applies to EVERY article matching the same filter
+// the list is showing, server-side — so it isn't limited to the rows loaded on the current page.
+export const BulkAllFilterSchema = z.object({
+  status: ArticleStatusSchema.optional(),
+  productArea: ProductAreaSchema.optional(),
+  feature: z.string().optional(),
+  search: z.string().optional(),
+  categoryId: z.string().optional(),
+  duplicates: z.boolean().optional(),
+});
+export type BulkAllFilter = z.infer<typeof BulkAllFilterSchema>;
+
+export const BulkAllActionSchema = z.object({
+  action: z.enum(['publish', 'draft', 'archive', 'delete']),
+  filter: BulkAllFilterSchema.default({}),
+});
+export type BulkAllActionInput = z.infer<typeof BulkAllActionSchema>;
+
+export const BulkAllResultSchema = z.object({
+  action: z.string(),
+  affected: z.number(),
+});
+export type BulkAllResult = z.infer<typeof BulkAllResultSchema>;

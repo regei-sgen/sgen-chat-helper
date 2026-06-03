@@ -30,7 +30,9 @@ async function buildServer() {
           ? { target: 'pino-pretty', options: { colorize: true } }
           : undefined,
     },
-    bodyLimit: 10 * 1024 * 1024,
+    // Bulk uploads pack many markdown files into ONE multipart request, so the body can be large.
+    // (Per-file and file-count caps are enforced by @fastify/multipart below.)
+    bodyLimit: 100 * 1024 * 1024,
   });
 
   app.setErrorHandler(errorHandler);
@@ -41,7 +43,12 @@ async function buildServer() {
   });
 
   await app.register(multipart, {
-    limits: { fileSize: 5 * 1024 * 1024, files: 50 },
+    // fileSize: per-file cap (markdown is small). files: max files in ONE request. parts: @fastify/
+    // multipart caps total parts (files + fields) at 1000 BY DEFAULT — so ~1000 files in one request
+    // 413s ("reach parts limit") even though `files` is higher. The client now uploads in small
+    // chunks (see /upload-bulk), but we also raise `parts` above `files` so a direct single-shot
+    // upload can't silently hit the hidden 1000 cap.
+    limits: { fileSize: 5 * 1024 * 1024, files: 5000, parts: 5200 },
   });
 
   await app.register(jwt, {

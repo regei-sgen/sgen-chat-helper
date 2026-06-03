@@ -9,6 +9,8 @@ export interface UploadJobPayload {
   content: string;
   authorId: string;
   autoPublish: boolean;
+  // When true, the worker stores the markdown verbatim (no AI structuring). See structureAsIs.
+  asIs: boolean;
 }
 
 const url = new URL(env.REDIS_URL);

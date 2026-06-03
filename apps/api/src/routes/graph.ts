@@ -13,6 +13,7 @@ export async function graphRoutes(app: FastifyInstance) {
         title: true,
         slug: true,
         productArea: true,
+        productPillar: true,
         difficulty: true,
         status: true,
         prerequisites: { select: { id: true } },
@@ -25,6 +26,7 @@ export async function graphRoutes(app: FastifyInstance) {
       label: a.title,
       slug: a.slug,
       productArea: a.productArea,
+      productPillar: a.productPillar,
       difficulty: a.difficulty,
       status: a.status,
     }));

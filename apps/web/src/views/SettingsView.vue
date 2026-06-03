@@ -38,6 +38,7 @@ const openaiInput = ref('');
 const geminiInput = ref('');
 const structuringProvider = ref('anthropic');
 const structuringModel = ref('');
+const autolinkProvider = ref('claude-code');
 const embeddingProvider = ref('local');
 const savingAi = ref(false);
 const testing = ref(false);
@@ -56,11 +57,6 @@ const structuringProviderOptions = [
   { value: 'gemini', label: 'Gemini (Google)' },
   { value: 'claude-code', label: 'Claude Code (local CLI — no API key)' },
 ];
-const embeddingProviderOptions = [
-  { value: 'local', label: 'Local — MiniLM (free, offline · 384-dim)' },
-  { value: 'openai', label: 'OpenAI — text-embedding-3-small (1536-dim)' },
-  { value: 'gemini', label: 'Gemini — text-embedding-004 (768-dim)' },
-];
 
 function onStructuringProviderChange(v: string | null) {
   structuringProvider.value = v ?? 'anthropic';
@@ -74,6 +70,7 @@ async function loadAiStatus() {
     embeddingProvider.value = s.embeddingProvider;
     structuringProvider.value = s.structuringProvider;
     structuringModel.value = s.structuringModel;
+    autolinkProvider.value = s.autolinkProvider;
   } catch (err) {
     toast.error(err instanceof ApiError ? err.message : 'Failed to load AI settings');
   }
@@ -125,6 +122,7 @@ async function saveAi() {
     const body: SettingsUpdateInput = {
       structuringProvider: structuringProvider.value as SettingsUpdateInput['structuringProvider'],
       structuringModel: structuringModel.value.trim(),
+      autolinkProvider: autolinkProvider.value as SettingsUpdateInput['autolinkProvider'],
       embeddingProvider: embeddingProvider.value as SettingsUpdateInput['embeddingProvider'],
     };
     if (anthropicInput.value.trim()) body.anthropicApiKey = anthropicInput.value.trim();
@@ -137,6 +135,7 @@ async function saveAi() {
     embeddingProvider.value = aiStatus.value.embeddingProvider;
     structuringProvider.value = aiStatus.value.structuringProvider;
     structuringModel.value = aiStatus.value.structuringModel;
+    autolinkProvider.value = aiStatus.value.autolinkProvider;
     toast.success('AI provider settings saved');
   } catch (err) {
     toast.error(err instanceof ApiError ? err.message : 'Failed to save');
@@ -342,8 +341,8 @@ async function reembed() {
       <div class="space-y-2 border-t border-light pt-4">
         <div class="text-sm font-medium">Chat assistant AI</div>
         <p class="text-xs text-text/60">
-          Which AI answers questions in the chat (retrieval rerank + composing the reply) and
-          organizes article links. Pick the active provider here.
+          Which AI answers questions in the chat (retrieval rerank + composing the reply). Pick the
+          active provider here.
         </p>
         <Select
           :model-value="structuringProvider"
@@ -369,18 +368,34 @@ async function reembed() {
         </p>
       </div>
 
+      <!-- Link Arranger AI -->
+      <div class="space-y-2 border-t border-light pt-4">
+        <div class="text-sm font-medium">Link Arranger AI</div>
+        <p class="text-xs text-text/60">
+          Which AI the knowledge-graph <strong>Link Arranger</strong> uses to organize article
+          <strong>Prerequisites</strong> &amp; <strong>Related</strong> links. Defaults to local
+          <strong>Claude Code</strong> — no API key and no free-tier rate limits — but you can point
+          it at another provider here.
+        </p>
+        <Select
+          :model-value="autolinkProvider"
+          :options="structuringProviderOptions"
+          label="Provider"
+          @update:model-value="(v) => (autolinkProvider = v ?? 'claude-code')"
+        />
+        <p v-if="autolinkProvider === 'claude-code'" class="text-xs text-text/60">
+          Runs only on this machine (where Claude Code is installed &amp; signed in); it won't work
+          on a remote deployment.
+        </p>
+      </div>
+
       <!-- Embeddings -->
       <div class="space-y-2 border-t border-light pt-4">
         <div class="text-sm font-medium">Embeddings (search)</div>
-        <Select
-          :model-value="embeddingProvider"
-          :options="embeddingProviderOptions"
-          label="Provider"
-          @update:model-value="(v) => (embeddingProvider = v ?? 'local')"
-        />
-        <p v-if="embeddingProvider !== 'local'" class="text-xs text-text/60">
-          After switching, save then click <strong>Re-embed all</strong> so existing articles are
-          searchable under the new model.
+        <p class="text-xs text-text/60">
+          Embeddings always run <strong>locally</strong> (MiniLM · 384-dim) — no API key and no
+          rate limits, so uploads never fail on a provider quota. If articles below show as needing
+          it, click <strong>Re-embed all</strong>.
         </p>
       </div>
 
@@ -397,6 +412,11 @@ async function reembed() {
           Chat AI:
           <span class="text-text font-medium">{{ aiStatus.structuringProvider }}</span>
           ({{ aiStatus.structuringModel }})
+        </div>
+        <div class="text-text/70">
+          Link Arranger:
+          <span class="text-text font-medium">{{ aiStatus.autolinkProvider }}</span>
+          ({{ aiStatus.autolinkModel }})
         </div>
         <div class="text-text/70">
           Uploads: <span class="text-text font-medium">claude-code</span> (local, always)

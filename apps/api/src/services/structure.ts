@@ -63,3 +63,45 @@ export async function structureArticle(
   }
   throw lastErr;
 }
+
+// "Upload as is" — build a StructuredArticle from raw markdown with NO AI. Deterministic:
+//   • title   → the first ATX H1 ("# …"), else the filename (sans extension), else "Untitled"
+//   • summary → the first prose line (not a heading/bullet/quote/table), else the title; capped
+//   • content → the markdown stored VERBATIM
+// Product area, difficulty, feature, tags and steps are left empty — there is no AI to infer them,
+// so the uploader fills them in later. Mirrors structureArticle's contract (returns the same shape)
+// but never shells out to the Claude CLI.
+export function structureAsIs(rawMd: string, filename?: string): StructuredArticle {
+  if (!rawMd.trim()) {
+    throw BadRequest('Cannot structure empty content');
+  }
+  const lines = rawMd.split(/\r?\n/);
+  const h1 = lines.find((l) => /^#\s+\S/.test(l));
+  const fromFile = filename?.replace(/\.[^.]+$/, '').trim();
+  const title = (h1 ? h1.replace(/^#\s+/, '').trim() : '') || fromFile || 'Untitled';
+  const summaryLine = lines.find(
+    (l) => l.trim() && !/^#{1,6}\s/.test(l) && !/^[-*>|]/.test(l.trim()),
+  );
+  // Strip emphasis/code markup, THEN trim again — so a line that's only markup (→ blank after
+  // stripping) correctly falls back to the title rather than storing a whitespace-only summary.
+  const stripped = summaryLine?.trim().replace(/[*_`]/g, '').trim();
+  const summary = (stripped || title).slice(0, 300);
+
+  const result = StructuredArticleSchema.safeParse({
+    title,
+    summary,
+    feature: null,
+    productArea: null,
+    difficulty: null,
+    content: rawMd, // verbatim
+    steps: [],
+    tags: [],
+    suggestedPrerequisites: [],
+    suggestedRelated: [],
+    sgenUrl: null,
+  });
+  if (!result.success) {
+    throw BadRequest('Could not build an article from this markdown', result.error.flatten());
+  }
+  return result.data;
+}

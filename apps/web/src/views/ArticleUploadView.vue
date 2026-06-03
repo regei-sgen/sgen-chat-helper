@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
-import { articleApi } from '@/api/resources';
+import { articleApi, uploadMarkdownBulk } from '@/api/resources';
 import { useUploadStore } from '@/stores/upload';
 import { useToastStore } from '@/stores/toast';
 import UploadDropzone from '@/components/UploadDropzone.vue';
@@ -27,6 +27,8 @@ const toast = useToastStore();
 const pendingFiles = ref<File[]>([]);
 const pastedMarkdown = ref('');
 const autoPublish = ref(false);
+// Processing mode: AI-structure with local Claude Code (default) vs "Upload as is" (no AI).
+const asIs = ref(false);
 const submitting = ref(false);
 const error = ref<string | null>(null);
 const lastJobId = ref<string | null>(null);
@@ -66,9 +68,11 @@ function beginSingleProgress() {
     { key: 'read', label: 'Reading document', state: 'done' },
     {
       key: 'structure',
-      label: 'Structuring with local Claude',
+      label: asIs.value ? 'Preparing article (no AI)' : 'Structuring with local Claude',
       state: 'pending',
-      detail: 'Runs on your machine — no API key needed',
+      detail: asIs.value
+        ? 'Storing your markdown as-is — no AI'
+        : 'Runs on your machine — no API key needed',
     },
     { key: 'dedup', label: 'Checking for existing duplicates', state: 'pending' },
     { key: 'save', label: 'Saving article', state: 'pending' },
@@ -100,7 +104,7 @@ const bulkStages = computed<Stage[]>(() => {
     { key: 'queued', label: `Queued ${total} file${total === 1 ? '' : 's'}`, state: 'done' },
     {
       key: 'process',
-      label: 'Structuring with local Claude',
+      label: asIs.value ? 'Saving as-is (no AI)' : 'Structuring with local Claude',
       state: finished ? 'done' : 'active',
       detail: st
         ? `${st.completed} done · ${st.failed} failed · ${st.total} total`
@@ -166,7 +170,7 @@ async function analyzeFile(file: File) {
 
   let res: AnalyzeResponse;
   try {
-    res = await articleApi.analyze(file);
+    res = await articleApi.analyze(file, asIs.value);
   } catch (err) {
     failSingle('structure', err);
     throw err;
@@ -189,6 +193,8 @@ async function analyzeFile(file: File) {
       structured: res.structured,
       action: 'create',
       autoPublish: autoPublish.value,
+      // For a reference KB card this carries the full parsed frontmatter so nothing is flattened.
+      card: res.card,
     });
   } catch (err) {
     failSingle('save', err);
@@ -225,11 +231,23 @@ async function submit() {
       return;
     }
     if (pendingFiles.value.length > 1) {
-      const res = await articleApi.uploadBulk(pendingFiles.value, autoPublish.value);
-      lastJobId.value = res.jobId;
-      upload.startTracking(res.jobId);
-      beginBulkProgress();
-      toast.success(`Queued ${res.total} files`);
+      const files = pendingFiles.value;
+      const total = files.length;
+      // Upload in small chunks that all feed ONE job. Show the progress modal as soon as the job
+      // exists (after the first chunk), then keep streaming the rest in the background.
+      const res = await uploadMarkdownBulk(files, autoPublish.value, asIs.value, {
+        onJobCreated: (jobId) => {
+          lastJobId.value = jobId;
+          upload.startTracking(jobId);
+          beginBulkProgress();
+        },
+      });
+      if (res.failedToUpload > 0) {
+        toast.error(
+          `${res.failedToUpload} of ${total} files couldn't be uploaded and were skipped.`,
+        );
+      }
+      toast.success(`Queued ${res.enqueued} file${res.enqueued === 1 ? '' : 's'}`);
       pendingFiles.value = [];
       return;
     }
@@ -295,8 +313,10 @@ function changedOnly(diff: AnalyzeResponse['candidates'][number]['diff']) {
   <div>
     <h1 class="text-2xl font-semibold mb-1">Upload markdown</h1>
     <p class="text-text/60 mb-4">
-      Drop one or more .md files, or paste raw markdown. We structure each into an article using
-      your local <strong>Claude Code</strong> CLI (no API key needed). Before saving, we check
+      Drop one or more .md files, drag in whole folders (or use “Select a folder”), or paste raw
+      markdown. Choose whether to
+      <strong>structure each with your local Claude Code</strong> CLI (no API key needed) or
+      <strong>upload as-is</strong> (store the markdown verbatim, no AI). Before saving, we check
       existing knowledge — if something similar exists, you'll review the changes first. Bulk
       uploads flag possible duplicates for review instead of overwriting.
     </p>
@@ -319,6 +339,24 @@ function changedOnly(diff: AnalyzeResponse['candidates'][number]['diff']) {
       <div class="card">
         <p class="text-sm text-text/60 mb-2">…or paste markdown</p>
         <MarkdownEditor v-model="pastedMarkdown" :rows="10" placeholder="# Heading…" />
+      </div>
+
+      <div class="card space-y-2">
+        <div class="text-sm font-medium">Processing</div>
+        <label class="flex items-start gap-2 text-sm">
+          <input type="radio" :value="false" v-model="asIs" class="mt-0.5" />
+          <span>
+            <span class="font-medium">Structure with Claude Code</span> (AI) — extracts title,
+            summary, steps, product area &amp; tags. Runs on your machine, no API key.
+          </span>
+        </label>
+        <label class="flex items-start gap-2 text-sm">
+          <input type="radio" :value="true" v-model="asIs" class="mt-0.5" />
+          <span>
+            <span class="font-medium">Upload as-is</span> (no AI) — store the markdown verbatim.
+            Title comes from the first heading; fill in the rest later.
+          </span>
+        </label>
       </div>
 
       <div class="card flex items-center justify-between">

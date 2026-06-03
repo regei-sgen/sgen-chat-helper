@@ -7,6 +7,7 @@ import type {
   ArticleListQuery,
   ArticleUpdateInput,
   BulkAction,
+  BulkAllFilter,
 } from '@kb/shared';
 
 export const useArticlesStore = defineStore('articles', () => {
@@ -83,6 +84,24 @@ export const useArticlesStore = defineStore('articles', () => {
     return result;
   }
 
+  // Apply an action to EVERY article matching the current list filter (not just the loaded page).
+  // Pulls the filter straight from `filters` (minus pagination) so it always matches what's shown.
+  async function bulkAll(action: BulkAction) {
+    const f = filters.value;
+    const filter: BulkAllFilter = {
+      status: f.status,
+      productArea: f.productArea,
+      feature: f.feature,
+      search: f.search,
+      categoryId: f.categoryId,
+      duplicates: f.duplicates,
+    };
+    const result = await articleApi.bulkAll(action, filter);
+    // Reset to page 1 and reload — deletes can shrink the set below the current page.
+    await fetchList({ page: 1 });
+    return result;
+  }
+
   return {
     items,
     total,
@@ -97,5 +116,6 @@ export const useArticlesStore = defineStore('articles', () => {
     remove,
     publish,
     bulk,
+    bulkAll,
   };
 });
