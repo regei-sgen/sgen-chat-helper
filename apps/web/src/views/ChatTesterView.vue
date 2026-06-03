@@ -132,7 +132,7 @@ async function goToGroupStep(m: Msg, g: StepGroup, n: number) {
 function dotClass(active: number, n: number): string {
   if (n === active) return 'bg-primary text-white ring-2 ring-primary/40';
   if (n < active) return 'bg-primary/80 text-white';
-  return 'bg-white border border-light text-text/50 hover:border-primary/50';
+  return 'bg-surface border border-light text-text/50 hover:border-primary/50';
 }
 
 // Multi-topic shows its trailing links/sources/follow-ups immediately (the steppers are independent);
@@ -258,7 +258,7 @@ function reset() {
                 <template v-for="(s, idx) in g.steps" :key="'c' + s.n">
                   <div
                     v-if="idx + 1 === groupActive(m, g.key)"
-                    class="rounded-card border bg-white px-3 py-2"
+                    class="rounded-card border bg-surface px-3 py-2"
                     :class="s.highlight ? 'border-primary ring-1 ring-primary/30' : 'border-light'"
                   >
                     <div class="flex items-start gap-2">
@@ -325,7 +325,7 @@ function reset() {
                   <div
                     v-for="(s, idx) in g.steps"
                     :key="'l' + s.n"
-                    class="rounded-card border bg-white px-3 py-2"
+                    class="rounded-card border bg-surface px-3 py-2"
                     :class="s.highlight ? 'border-primary ring-1 ring-primary/30' : 'border-light'"
                   >
                     <div class="flex items-start gap-2">
@@ -381,7 +381,7 @@ function reset() {
               <span
                 v-for="(s, si) in m.sources"
                 :key="si"
-                class="text-[10px] bg-white border border-light rounded-full px-2 py-0.5 text-text/60"
+                class="text-[10px] bg-surface border border-light rounded-full px-2 py-0.5 text-text/60"
               >
                 {{ s.title }}
               </span>

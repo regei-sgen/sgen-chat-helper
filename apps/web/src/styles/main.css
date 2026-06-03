@@ -9,6 +9,21 @@
 @tailwind utilities;
 
 @layer base {
+  /* Theme tokens (space-separated RGB so Tailwind's <alpha-value> opacity modifiers work). */
+  :root {
+    --c-body: 249 249 249;
+    --c-surface: 255 255 255;
+    --c-text: 0 0 0;
+    --c-light: 232 232 232;
+    color-scheme: light;
+  }
+  .dark {
+    --c-body: 18 18 18; /* #121212 */
+    --c-surface: 30 30 30; /* #1e1e1e */
+    --c-text: 237 237 237; /* #ededed */
+    --c-light: 56 56 56; /* #383838 — borders & subtle fills */
+    color-scheme: dark;
+  }
   html,
   body {
     height: 100%;
@@ -38,17 +53,17 @@
     @apply btn bg-secondary text-white shadow-sm hover:bg-secondary-hover hover:shadow;
   }
   .btn-ghost {
-    @apply btn bg-white text-text border border-light hover:bg-light/70;
+    @apply btn bg-surface text-text border border-light hover:bg-light/70;
   }
   .btn-sm {
     padding: 7px 14px;
     font-size: 13.5px;
   }
   .input-base {
-    @apply block w-full rounded-btn border border-light bg-white px-3.5 py-2.5 text-text outline-none transition duration-150 placeholder:text-text/40 focus:border-primary focus:ring-2 focus:ring-primary/20;
+    @apply block w-full rounded-btn border border-light bg-surface px-3.5 py-2.5 text-text outline-none transition duration-150 placeholder:text-text/40 focus:border-primary focus:ring-2 focus:ring-primary/20;
   }
   .card {
-    @apply bg-white rounded-card border border-light/70 p-5 shadow-card;
+    @apply bg-surface rounded-card border border-light/70 p-5 shadow-card;
   }
   .card-hover {
     @apply transition-all duration-200 hover:shadow-card-md hover:-translate-y-0.5;

@@ -25,7 +25,7 @@ const sizeClass = {
     <transition name="modal">
       <div v-if="open" class="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div class="absolute inset-0 bg-black/50" @click="emit('close')" />
-        <div class="relative w-full bg-white rounded-btn shadow-xl" :class="sizeClass">
+        <div class="relative w-full bg-surface rounded-btn shadow-xl" :class="sizeClass">
           <div class="px-5 py-4 border-b border-light flex items-center justify-between">
             <h3 class="text-lg font-semibold">{{ title }}</h3>
             <button class="text-text/60 hover:text-text" @click="emit('close')">

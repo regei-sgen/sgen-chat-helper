@@ -44,7 +44,7 @@ async function onSubmit() {
 <template>
   <div class="min-h-screen grid place-items-center bg-body p-4">
     <form
-      class="w-full max-w-sm bg-white p-6 rounded-btn shadow border border-light space-y-4"
+      class="w-full max-w-sm bg-surface p-6 rounded-btn shadow border border-light space-y-4"
       @submit.prevent="onSubmit"
     >
       <div class="text-center">

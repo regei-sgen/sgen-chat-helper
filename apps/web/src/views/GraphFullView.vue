@@ -165,7 +165,7 @@ function spotlight(slug: string) {
             <button
               v-for="s in chatSources"
               :key="s.slug"
-              class="text-[11px] bg-white/10 hover:bg-white/20 border border-white/15 rounded-full px-2 py-0.5 text-left"
+              class="text-[11px] bg-surface/10 hover:bg-surface/20 border border-white/15 rounded-full px-2 py-0.5 text-left"
               @click="spotlight(s.slug)"
             >
               {{ s.title }}

@@ -12,11 +12,15 @@ import {
   KeyRound,
   Settings,
   LogOut,
+  Sun,
+  Moon,
 } from 'lucide-vue-next';
+import { useTheme } from '@/composables/useTheme';
 
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
+const { mode, toggle: toggleTheme } = useTheme();
 
 const userMenuOpen = ref(false);
 const userMenuEl = ref<HTMLElement | null>(null);
@@ -96,11 +100,22 @@ async function handleLogout() {
     </aside>
 
     <div class="flex-1 flex flex-col">
-      <header class="h-16 bg-white/80 backdrop-blur-md border-b border-light/80 flex items-center justify-between px-6 sticky top-0 z-20">
+      <header class="h-16 bg-surface/80 backdrop-blur-md border-b border-light/80 flex items-center justify-between px-6 sticky top-0 z-20">
         <div class="text-sm text-text/60">
           {{ route.meta.title || route.path }}
         </div>
-        <div ref="userMenuEl" class="relative">
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="h-9 w-9 grid place-items-center rounded-btn text-text/70 hover:text-text hover:bg-light/70 transition-colors"
+            :title="mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+            :aria-label="mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
+            @click="toggleTheme"
+          >
+            <Moon v-if="mode === 'light'" :size="18" :stroke-width="1.75" />
+            <Sun v-else :size="18" :stroke-width="1.75" />
+          </button>
+          <div ref="userMenuEl" class="relative">
           <button
             class="flex items-center gap-2 text-sm font-medium hover:opacity-80"
             @click.stop="userMenuOpen = !userMenuOpen"
@@ -115,7 +130,7 @@ async function handleLogout() {
           </button>
           <div
             v-if="userMenuOpen"
-            class="absolute right-0 top-full mt-2 w-48 bg-white border border-light/70 rounded-card shadow-pop z-30 overflow-hidden"
+            class="absolute right-0 top-full mt-2 w-48 bg-surface border border-light/70 rounded-card shadow-pop z-30 overflow-hidden"
           >
             <router-link
               to="/settings"
@@ -130,6 +145,7 @@ async function handleLogout() {
             >
               <LogOut :size="15" /> Logout
             </button>
+          </div>
           </div>
         </div>
       </header>

@@ -187,7 +187,7 @@ function goPage(p: number) {
           :class="
             status === tab.value
               ? 'bg-secondary text-white border-secondary'
-              : 'bg-white text-text border-light hover:bg-light'
+              : 'bg-surface text-text border-light hover:bg-light'
           "
           @click="status = tab.value"
         >

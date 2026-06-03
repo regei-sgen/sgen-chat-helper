@@ -179,7 +179,7 @@ async function pickFolder() {
 <template>
   <div
     class="border-2 border-dashed rounded-btn p-8 text-center transition-colors cursor-pointer"
-    :class="dragOver ? 'border-primary bg-primary/5' : 'border-light bg-white'"
+    :class="dragOver ? 'border-primary bg-primary/5' : 'border-light bg-surface'"
     @dragover.prevent="dragOver = true"
     @dragleave="dragOver = false"
     @drop="onDrop"

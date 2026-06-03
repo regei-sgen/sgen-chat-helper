@@ -32,7 +32,7 @@ function onInput(e: Event) {
           v-for="m in ['edit', 'preview', 'split'] as const"
           :key="m"
           class="px-3 py-1 capitalize"
-          :class="mode === m ? 'bg-secondary text-white' : 'bg-white text-text hover:bg-light'"
+          :class="mode === m ? 'bg-secondary text-white' : 'bg-surface text-text hover:bg-light'"
           @click="mode = m"
         >
           {{ m }}

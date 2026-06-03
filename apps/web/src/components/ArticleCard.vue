@@ -22,7 +22,7 @@ const emit = defineEmits<{ (e: 'toggle-select'): void }>();
         :class="
           selected
             ? 'bg-primary border-primary text-white'
-            : 'bg-white border-light hover:border-primary/60'
+            : 'bg-surface border-light hover:border-primary/60'
         "
         :aria-pressed="selected"
         :title="selected ? 'Deselect' : 'Select'"

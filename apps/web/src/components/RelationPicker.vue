@@ -98,7 +98,7 @@ function remove(id: string) {
       />
       <div
         v-if="query && (loading || available.length)"
-        class="absolute z-10 mt-1 w-full bg-white border border-light rounded-btn shadow max-h-60 overflow-auto"
+        class="absolute z-10 mt-1 w-full bg-surface border border-light rounded-btn shadow max-h-60 overflow-auto"
       >
         <div v-if="loading" class="px-3 py-2 text-sm text-text/60">Searching…</div>
         <button

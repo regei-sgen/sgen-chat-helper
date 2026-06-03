@@ -18,6 +18,7 @@ import type {
   BulkAllResult,
   ApiKey,
   ApiKeyCreatedResponse,
+  AnalyticsSummary,
   AuthResponse,
   AuthUser,
   CoverageResponse,
@@ -222,9 +223,15 @@ export const inviteApi = {
   remove: (id: string) => request<{ ok: true }>(`/invites/${id}`, { method: 'DELETE' }),
 };
 
+// `days` scopes bot-usage metrics to a window (7/30/90); omit/null = all time.
+const daysQuery = (days?: number | null) => (days ? `?days=${days}` : '');
 export const analyticsApi = {
-  unanswered: () => request<UnansweredQuery[]>('/analytics/unanswered'),
-  topQueries: () => request<TopQuery[]>('/analytics/top-queries'),
+  summary: (days?: number | null) =>
+    request<AnalyticsSummary>(`/analytics/summary${daysQuery(days)}`),
+  unanswered: (days?: number | null) =>
+    request<UnansweredQuery[]>(`/analytics/unanswered${daysQuery(days)}`),
+  topQueries: (days?: number | null) =>
+    request<TopQuery[]>(`/analytics/top-queries${daysQuery(days)}`),
   coverage: () => request<CoverageResponse>('/analytics/coverage'),
 };
 
