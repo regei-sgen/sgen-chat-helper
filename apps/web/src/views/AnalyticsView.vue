@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
-import { analyticsApi } from '@/api/resources';
+import { analyticsApi, type AnalyticsRange } from '@/api/resources';
 import type {
   AnalyticsSummary,
   CoverageResponse,
@@ -10,7 +10,10 @@ import type {
 import { PRODUCT_AREA_LABELS } from '@kb/shared';
 import { formatDateTime } from '@/lib/format';
 import { ApiError } from '@/api/client';
-import { Download } from 'lucide-vue-next';
+import { useToastStore } from '@/stores/toast';
+import { Download, Copy } from 'lucide-vue-next';
+
+const toast = useToastStore();
 
 const RANGES: { label: string; days: number | null }[] = [
   { label: '7d', days: 7 },
@@ -19,6 +22,32 @@ const RANGES: { label: string; days: number | null }[] = [
   { label: 'All', days: null },
 ];
 const range = ref<number | null>(30);
+
+// Custom date-range mode: when active with two valid dates it scopes the whole view (and therefore
+// the CSV/Copy exports) to [from, to] instead of a preset; otherwise the preset `range` applies.
+const customActive = ref(false);
+const customFrom = ref(''); // YYYY-MM-DD (inclusive)
+const customTo = ref(''); // YYYY-MM-DD (inclusive)
+const isCustomValid = computed(
+  () =>
+    customActive.value &&
+    !!customFrom.value &&
+    !!customTo.value &&
+    customFrom.value <= customTo.value,
+);
+// The window every analytics request uses; a valid custom range wins over the preset.
+const activeRange = computed<AnalyticsRange>(() =>
+  isCustomValid.value ? { from: customFrom.value, to: customTo.value } : { days: range.value },
+);
+// Reloads fire only when the *effective* window changes — half-typed custom dates keep the prior key.
+const rangeKey = computed(() =>
+  isCustomValid.value ? `c:${customFrom.value}:${customTo.value}` : `d:${range.value ?? 'all'}`,
+);
+
+function selectPreset(days: number | null) {
+  customActive.value = false;
+  range.value = days;
+}
 
 const summary = ref<AnalyticsSummary | null>(null);
 const coverage = ref<CoverageResponse | null>(null);
@@ -86,11 +115,17 @@ function offsetKey(key: string, delta: number): string {
 const series = computed(() => {
   const daily = summary.value?.daily ?? [];
   const byDate = new Map(daily.map((d) => [d.date, d]));
-  const end = todayKey();
   let start: string;
-  if (range.value) start = offsetKey(end, -(range.value - 1));
-  else if (daily.length) start = daily[0].date;
-  else return [] as { date: string; count: number; matched: number }[];
+  let end: string;
+  if (isCustomValid.value) {
+    start = customFrom.value;
+    end = customTo.value;
+  } else {
+    end = todayKey();
+    if (range.value) start = offsetKey(end, -(range.value - 1));
+    else if (daily.length) start = daily[0].date;
+    else return [] as { date: string; count: number; matched: number }[];
+  }
   const out: { date: string; count: number; matched: number }[] = [];
   for (let k = start; k <= end; k = offsetKey(k, 1)) {
     const e = byDate.get(k);
@@ -109,6 +144,14 @@ const fmtConf = (x: number | null | undefined) =>
   x === null || x === undefined ? '—' : x.toFixed(2);
 const rangeLabel = computed(
   () => RANGES.find((r) => r.days === range.value)?.label ?? `${range.value}d`,
+);
+// Human-readable window for the "Bot usage · …" subtitle (handles the custom range too).
+const rangeDisplay = computed(() =>
+  isCustomValid.value
+    ? `${customFrom.value} → ${customTo.value}`
+    : range.value
+      ? `last ${rangeLabel.value}`
+      : 'all time',
 );
 
 // ── Tables: pagination + CSV export + colour helpers ────────────────────────
@@ -148,7 +191,11 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   a.remove();
   URL.revokeObjectURL(url);
 }
-const rangeTag = computed(() => `${range.value ? `${range.value}d` : 'all'}-${todayKey()}`);
+const rangeTag = computed(() =>
+  isCustomValid.value
+    ? `${customFrom.value}_to_${customTo.value}`
+    : `${range.value ? `${range.value}d` : 'all'}-${todayKey()}`,
+);
 function exportTopQueries(): void {
   downloadCsv(
     `top-queries-${rangeTag.value}.csv`,
@@ -174,11 +221,55 @@ function exportUnanswered(): void {
   );
 }
 
+// ── Copy the full filtered table to the clipboard as TSV (pastes into Excel / Sheets as columns) ──
+function tsvCell(v: string | number | null): string {
+  // Flatten any tabs/newlines inside a value so they can't break the column/row grid on paste.
+  const s = v === null || v === undefined ? '' : String(v);
+  return s.replace(/[\t\r\n]+/g, ' ').trim();
+}
+function toTsv(headers: string[], rows: (string | number | null)[][]): string {
+  return [headers, ...rows].map((r) => r.map(tsvCell).join('\t')).join('\n');
+}
+async function copyTsv(label: string, headers: string[], rows: (string | number | null)[][]) {
+  if (!rows.length) return;
+  try {
+    await navigator.clipboard.writeText(toTsv(headers, rows));
+    toast.success(`Copied ${rows.length} ${label} to clipboard`);
+  } catch {
+    toast.error('Copy failed — clipboard not available');
+  }
+}
+function copyTopQueries(): void {
+  copyTsv(
+    'queries',
+    ['Question', 'Count', 'Avg confidence', 'Helpful %'],
+    topQueries.value.map((q) => [
+      q.question,
+      q.count,
+      q.avgConfidence !== null ? q.avgConfidence.toFixed(2) : '',
+      q.helpfulRatio !== null ? `${Math.round(q.helpfulRatio * 100)}%` : '',
+    ]),
+  );
+}
+function copyUnanswered(): void {
+  copyTsv(
+    'rows',
+    ['Question', 'Status', 'Confidence', 'When'],
+    unanswered.value.map((q) => [
+      q.question,
+      q.matchedId === null ? 'no match' : 'low confidence',
+      q.confidence !== null ? q.confidence.toFixed(2) : '',
+      new Date(q.createdAt).toISOString(),
+    ]),
+  );
+}
+
 async function loadUsage() {
+  const r = activeRange.value;
   const [sum, top, unans] = await Promise.all([
-    analyticsApi.summary(range.value),
-    analyticsApi.topQueries(range.value),
-    analyticsApi.unanswered(range.value),
+    analyticsApi.summary(r),
+    analyticsApi.topQueries(r),
+    analyticsApi.unanswered(r),
   ]);
   summary.value = sum;
   topQueries.value = top;
@@ -196,7 +287,7 @@ onMounted(async () => {
   }
 });
 
-watch(range, async () => {
+watch(rangeKey, async () => {
   refreshing.value = true;
   topPage.value = 1;
   unansPage.value = 1;
@@ -212,23 +303,60 @@ watch(range, async () => {
 
 <template>
   <div>
-    <div class="flex items-center justify-between gap-3 mb-4">
+    <div class="flex items-start justify-between gap-3 mb-4">
       <h1 class="text-2xl font-semibold">Analytics</h1>
       <!-- date-range selector (scopes the bot-usage metrics) -->
-      <div class="inline-flex rounded-btn border border-light overflow-hidden text-sm">
-        <button
-          v-for="r in RANGES"
-          :key="r.label"
-          class="px-3 py-1.5 transition-colors"
-          :class="
-            range === r.days
-              ? 'bg-primary text-white'
-              : 'bg-surface text-text/70 hover:bg-light'
-          "
-          @click="range = r.days"
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <div class="inline-flex rounded-btn border border-light overflow-hidden text-sm">
+          <button
+            v-for="r in RANGES"
+            :key="r.label"
+            class="px-3 py-1.5 transition-colors"
+            :class="
+              !customActive && range === r.days
+                ? 'bg-primary text-white'
+                : 'bg-surface text-text/70 hover:bg-light'
+            "
+            @click="selectPreset(r.days)"
+          >
+            {{ r.label }}
+          </button>
+          <button
+            class="px-3 py-1.5 transition-colors border-l border-light"
+            :class="
+              customActive
+                ? 'bg-primary text-white'
+                : 'bg-surface text-text/70 hover:bg-light'
+            "
+            @click="customActive = true"
+          >
+            Custom
+          </button>
+        </div>
+        <!-- custom from/to window (only shown when Custom is selected) -->
+        <div v-if="customActive" class="inline-flex items-center gap-1.5 text-sm">
+          <input
+            v-model="customFrom"
+            type="date"
+            :max="customTo || undefined"
+            aria-label="From date"
+            class="rounded-btn border border-light bg-surface px-2 py-1 text-text/80"
+          />
+          <span class="text-text/40">→</span>
+          <input
+            v-model="customTo"
+            type="date"
+            :min="customFrom || undefined"
+            aria-label="To date"
+            class="rounded-btn border border-light bg-surface px-2 py-1 text-text/80"
+          />
+        </div>
+        <p
+          v-if="customActive && !isCustomValid"
+          class="w-full text-right text-[11px] text-warning"
         >
-          {{ r.label }}
-        </button>
+          Pick a start and end date (start ≤ end) to apply the custom range.
+        </p>
       </div>
     </div>
 
@@ -239,7 +367,7 @@ watch(range, async () => {
       <!-- ── Bot usage ─────────────────────────────────────────────── -->
       <section v-if="summary" class="space-y-3">
         <h2 class="text-sm font-semibold text-text/60">
-          Bot usage · {{ range ? `last ${rangeLabel}` : 'all time' }}
+          Bot usage · {{ rangeDisplay }}
         </h2>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div class="card">
@@ -370,13 +498,21 @@ watch(range, async () => {
             Top queries
             <span class="text-text/50 font-normal text-sm">({{ topQueries.length }})</span>
           </h2>
-          <button
-            v-if="topQueries.length"
-            class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
-            @click="exportTopQueries"
-          >
-            <Download :size="13" /> CSV
-          </button>
+          <div v-if="topQueries.length" class="flex items-center gap-2">
+            <button
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
+              title="Copy the full filtered table (tab-separated — pastes into Excel / Sheets)"
+              @click="copyTopQueries"
+            >
+              <Copy :size="13" /> Copy
+            </button>
+            <button
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
+              @click="exportTopQueries"
+            >
+              <Download :size="13" /> CSV
+            </button>
+          </div>
         </div>
         <div v-if="topQueries.length === 0" class="text-sm text-text/60">
           No bot queries in this range.
@@ -451,13 +587,21 @@ watch(range, async () => {
             Unanswered / low-confidence
             <span class="text-text/50 font-normal text-sm">({{ unanswered.length }})</span>
           </h2>
-          <button
-            v-if="unanswered.length"
-            class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
-            @click="exportUnanswered"
-          >
-            <Download :size="13" /> CSV
-          </button>
+          <div v-if="unanswered.length" class="flex items-center gap-2">
+            <button
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
+              title="Copy the full filtered table (tab-separated — pastes into Excel / Sheets)"
+              @click="copyUnanswered"
+            >
+              <Copy :size="13" /> Copy
+            </button>
+            <button
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-primary border border-primary/40 rounded-btn px-2.5 py-1 hover:bg-primary/5 transition-colors"
+              @click="exportUnanswered"
+            >
+              <Download :size="13" /> CSV
+            </button>
+          </div>
         </div>
         <div v-if="unanswered.length === 0" class="text-sm text-text/60">
           Nothing flagged — every query found a confident match.

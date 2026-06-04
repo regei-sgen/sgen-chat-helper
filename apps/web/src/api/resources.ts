@@ -223,15 +223,31 @@ export const inviteApi = {
   remove: (id: string) => request<{ ok: true }>(`/invites/${id}`, { method: 'DELETE' }),
 };
 
-// `days` scopes bot-usage metrics to a window (7/30/90); omit/null = all time.
-const daysQuery = (days?: number | null) => (days ? `?days=${days}` : '');
+// Bot-usage metrics are scoped to a date window: either a `days` preset (7/30/90; omit/null = all
+// time) OR an explicit `from`/`to` custom range (YYYY-MM-DD, inclusive). A custom range wins.
+export interface AnalyticsRange {
+  days?: number | null;
+  from?: string;
+  to?: string;
+}
+function rangeQuery(range?: AnalyticsRange | number | null): string {
+  // A bare number/null is shorthand for `{ days }` (keeps the old call sites working).
+  const r: AnalyticsRange =
+    typeof range === 'object' && range !== null ? range : { days: range ?? null };
+  const p = new URLSearchParams();
+  if (r.from) p.set('from', r.from);
+  if (r.to) p.set('to', r.to);
+  if (!r.from && !r.to && r.days) p.set('days', String(r.days));
+  const qs = p.toString();
+  return qs ? `?${qs}` : '';
+}
 export const analyticsApi = {
-  summary: (days?: number | null) =>
-    request<AnalyticsSummary>(`/analytics/summary${daysQuery(days)}`),
-  unanswered: (days?: number | null) =>
-    request<UnansweredQuery[]>(`/analytics/unanswered${daysQuery(days)}`),
-  topQueries: (days?: number | null) =>
-    request<TopQuery[]>(`/analytics/top-queries${daysQuery(days)}`),
+  summary: (range?: AnalyticsRange | number | null) =>
+    request<AnalyticsSummary>(`/analytics/summary${rangeQuery(range)}`),
+  unanswered: (range?: AnalyticsRange | number | null) =>
+    request<UnansweredQuery[]>(`/analytics/unanswered${rangeQuery(range)}`),
+  topQueries: (range?: AnalyticsRange | number | null) =>
+    request<TopQuery[]>(`/analytics/top-queries${rangeQuery(range)}`),
   coverage: () => request<CoverageResponse>('/analytics/coverage'),
 };
 

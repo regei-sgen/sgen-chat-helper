@@ -1,22 +1,64 @@
 import type { FastifyInstance } from 'fastify';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const LOW_CONFIDENCE_THRESHOLD = 0.55;
 
-// Parse a ?days=N range param → the cutoff Date (or null for "all time"). Used to scope the
-// bot-usage analytics to a window the dashboard selects (7 / 30 / 90 days).
-function rangeSince(query: unknown): { since: Date | null; days: number | null } {
-  const raw = Number((query as { days?: string })?.days);
+// Parse a "YYYY-MM-DD" day into a UTC instant — start-of-day by default, end-of-day for range
+// upper bounds so a `to` date includes the whole day. Returns null for anything malformed OR for an
+// out-of-range calendar date (Date.UTC silently rolls month 13 / day 99 over, so round-trip-check).
+function parseDateOnly(value: unknown, endOfDay = false): Date | null {
+  if (typeof value !== 'string') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(
+    endOfDay ? Date.UTC(y, mo - 1, day, 23, 59, 59, 999) : Date.UTC(y, mo - 1, day),
+  );
+  if (
+    Number.isNaN(d.getTime()) ||
+    d.getUTCFullYear() !== y ||
+    d.getUTCMonth() !== mo - 1 ||
+    d.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return d;
+}
+
+// Resolve the date window the dashboard asked for. A custom `from`/`to` pair (either bound optional)
+// wins; otherwise fall back to the `days=N` preset (7 / 30 / 90). `until` is null for presets/all-time.
+function parseRange(query: unknown): { since: Date | null; until: Date | null; days: number | null } {
+  const q = (query ?? {}) as { days?: string; from?: string; to?: string };
+  const from = parseDateOnly(q.from);
+  const to = parseDateOnly(q.to, true);
+  if (from || to) return { since: from, until: to, days: null };
+  const raw = Number(q.days);
   const days = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
-  return { since: days ? new Date(Date.now() - days * 24 * 60 * 60 * 1000) : null, days };
+  return { since: days ? new Date(Date.now() - days * 24 * 60 * 60 * 1000) : null, until: null, days };
+}
+
+// Build a Prisma `createdAt` filter from the resolved window (undefined = no date constraint).
+function createdAtFilter(
+  since: Date | null,
+  until: Date | null,
+): { gte?: Date; lte?: Date } | undefined {
+  if (!since && !until) return undefined;
+  const f: { gte?: Date; lte?: Date } = {};
+  if (since) f.gte = since;
+  if (until) f.lte = until;
+  return f;
 }
 
 export async function analyticsRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
 
   app.get('/unanswered', async (request, reply) => {
-    const { since } = rangeSince(request.query);
+    const { since, until } = parseRange(request.query);
+    const cf = createdAtFilter(since, until);
     const flagged = {
       OR: [
         { matchedId: null },
@@ -25,7 +67,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       ],
     };
     const rows = await prisma.botQuery.findMany({
-      where: since ? { AND: [{ createdAt: { gte: since } }, flagged] } : flagged,
+      where: cf ? { AND: [{ createdAt: cf }, flagged] } : flagged,
       orderBy: { createdAt: 'desc' },
       take: 200, // client paginates/exports the full filtered set
       select: { id: true, question: true, confidence: true, matchedId: true, createdAt: true },
@@ -35,9 +77,14 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
   // Bot-usage overview: headline KPIs + per-day volume for the selected range.
   app.get('/summary', async (request, reply) => {
-    const { since, days } = rangeSince(request.query);
+    const { since, until, days } = parseRange(request.query);
     const floor = since ?? new Date(0); // "all time" → from the epoch
-    const where = { createdAt: { gte: floor } };
+    const where = { createdAt: { gte: floor, ...(until ? { lte: until } : {}) } };
+
+    // Daily volume: same window. The upper bound is only added when a custom `to` is set, so the
+    // preset/all-time queries keep their single-bound plan.
+    const dailyWhere = [Prisma.sql`"createdAt" >= ${floor}`];
+    if (until) dailyWhere.push(Prisma.sql`"createdAt" <= ${until}`);
 
     const [totalQueries, matched, avg, withFeedback, helpful, daily] = await Promise.all([
       prisma.botQuery.count({ where }),
@@ -50,7 +97,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
                count(*) AS cnt,
                count("matchedId") AS matched
         FROM "BotQuery"
-        WHERE "createdAt" >= ${floor}
+        WHERE ${Prisma.join(dailyWhere, ' AND ')}
         GROUP BY day
         ORDER BY day ASC`,
     ]);
@@ -72,17 +119,18 @@ export async function analyticsRoutes(app: FastifyInstance) {
   });
 
   app.get('/top-queries', async (request, reply) => {
-    const { since } = rangeSince(request.query);
+    const { since, until } = parseRange(request.query);
+    const cf = createdAtFilter(since, until);
     const grouped = await prisma.botQuery.groupBy({
       by: ['question'],
-      where: since ? { createdAt: { gte: since } } : undefined,
+      where: cf ? { createdAt: cf } : undefined,
       _count: { question: true },
       _avg: { confidence: true },
       orderBy: { _count: { question: 'desc' } },
       take: 200, // client paginates/exports the full filtered set
     });
 
-    const inRange = since ? { createdAt: { gte: since } } : {};
+    const inRange = cf ? { createdAt: cf } : {};
     const enriched = await Promise.all(
       grouped.map(async (g) => {
         const totalWithFeedback = await prisma.botQuery.count({

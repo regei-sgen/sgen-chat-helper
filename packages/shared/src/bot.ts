@@ -83,6 +83,9 @@ export const WalkthroughSchema = z.object({
   source: z.string().optional(),
   // Step the client should reveal up to / focus first (the most relevant to the question).
   focusStep: z.number().int().positive().optional(),
+  // Extra article content rendered AFTER the steps (intro/extra prose, trailing sections like
+  // "### Get more from SGEN", links). The steps themselves stay in the interactive stepper.
+  footer: z.string().optional(),
 });
 export type Walkthrough = z.infer<typeof WalkthroughSchema>;
 

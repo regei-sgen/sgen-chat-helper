@@ -1,14 +1,17 @@
 import type { ChatMessage, Walkthrough } from '@kb/shared';
 import { prisma } from '../lib/prisma.js';
-import { runProvider, parseJsonResponse } from './ai.js';
 import { hybridSearch } from './search.js';
 
-const MIN_CONFIDENCE = 0.18;
-// "Is the local search clear enough to answer WITHOUT the AI?" thresholds (deterministic, tunable).
-// CLEAR_CONFIDENCE: the top match's vector similarity must be at least this high.
-// AMBIGUITY_GAP: the top match must beat the runner-up by at least this much. If either check
-// fails and there are multiple candidates, the query is "too complex" → escalate to the AI rerank.
-// Raise these to call the AI more often (safer); lower them to use AI less (cheaper).
+// Minimum cosine similarity to treat a search hit as a real answer. Tuned to the measured gap
+// between junk queries (random letters score ~0.15–0.28) and genuine questions (~0.41–0.68): below
+// this, the chat shows "did you mean these?" suggestions instead of answering from an irrelevant
+// nearest-neighbour match. (Raise it to be stricter / suggest more; lower it to answer more.)
+const MIN_CONFIDENCE = 0.35;
+// "Is the local search clear enough to answer with a SINGLE article?" thresholds (deterministic).
+// CLEAR_CONFIDENCE: the top match's cosine (vector) similarity must be at least this high.
+// AMBIGUITY_GAP: the top match must beat the runner-up by at least this much. If either check fails
+// and there are multiple candidates, we show them ALL as "multiple results" for the user to pick.
+// Raise these to be stricter about answering directly; lower them to answer with one article more.
 const CLEAR_CONFIDENCE = 0.35;
 const AMBIGUITY_GAP = 0.08;
 // A STRONG absolute top match (e.g. the user typed an exact/near-exact article title) answers
@@ -18,8 +21,8 @@ const AMBIGUITY_GAP = 0.08;
 const STRONG_CONFIDENCE = 0.45;
 // When there is NO clear single winner, but several articles are plausibly relevant, the bot shows
 // them ALL as "multiple results" (KB-grounded, no AI) instead of guessing one — this both serves
-// users who'd rather choose, and degrades gracefully when the AI rerank is unavailable. A candidate
-// counts as "plausible" at >= MULTI_RESULT_FLOOR vector similarity; at most MULTI_RESULT_MAX shown.
+// users who'd rather choose. A candidate counts as "plausible" at >= MULTI_RESULT_FLOOR cosine
+// similarity; at most MULTI_RESULT_MAX shown.
 const MULTI_RESULT_FLOOR = 0.3;
 const MULTI_RESULT_MAX = 3;
 
@@ -54,36 +57,10 @@ function expandFragments(frags: string[]): string[] {
   );
 }
 
-// The retrieval JUDGE: given the question + candidate articles, pick which ACTUALLY answer it.
-// This is the "analyze → get the right knowledge" stage — local search has good recall but
-// drifts on intent; the AI reranks by what the user is trying to DO.
-const RERANK_SYSTEM = `You are the retrieval judge for the SGEN Help Assistant. Given the user's question and a numbered list of candidate knowledge-base articles (id, title, summary), choose the article(s) that ACTUALLY answer the question — most relevant first.
-
-SGEN orientation (to disambiguate intent): a site's brand LOGO, favicon, site title, site email, social links and business info are set in SITE SETTINGS. The SG-Builder editor is for building and styling page layouts. The Component Library lists draggable page components. Choose by what the user is trying to DO, not by keyword overlap.
-
-Pick 1 to 3 ids. If NONE of the candidates genuinely answer the question, return an empty list. Return ONLY JSON: {"ids":["<id>", ...]}.`;
-
-async function rerankArticles(
-  message: string,
-  candidates: { id: string; title: string; summary: string | null; feature: string | null }[],
-): Promise<string[]> {
-  const list = candidates
-    .map(
-      (a, i) =>
-        `${i + 1}. id=${a.id} — ${a.title}${a.feature ? ` [${a.feature}]` : ''}\n   ${a.summary ?? ''}`,
-    )
-    .join('\n');
-  const text = await runProvider(
-    RERANK_SYSTEM,
-    `User question: "${message}"\n\nCandidates:\n${list}\n\nReturn JSON {"ids":[...]} — most relevant first, or {"ids":[]} if none answer it.`,
-    { maxTokens: 200, json: true },
-  );
-  const parsed = parseJsonResponse<{ ids?: unknown }>(text, 'rerank');
-  const ids = Array.isArray(parsed.ids) ? parsed.ids : [];
-  return ids
-    .filter((id): id is string => typeof id === 'string')
-    .filter((id) => candidates.some((c) => c.id === id));
-}
+// NOTE: the chat is fully DETERMINISTIC — no LLM. Answers come only from local cosine-similarity
+// (pgvector, local MiniLM embeddings) + Postgres full-text search. When the search finds no
+// confident match, the no-answer branch offers the closest candidates as clickable suggestions.
+// (The old AI reranker / AI compose are removed: zero external API calls per query → scales freely.)
 
 // A short, readable topic name from an article — its `feature` if set, else the title stripped of
 // the question scaffolding ("How do I set up Events?" → "Events"; "Why isn't the New Page screen
@@ -108,21 +85,54 @@ function fmtList(items: string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-// Make a KB article read as a conversational answer WITHOUT an AI call: drop the markdown title
-// heading, the "**Short answer:**" line (it just repeats the summary we already lead with), bare
-// doc-link lines (the chat surfaces those as buttons already), and any trailing "Source:" line.
-// Everything else (the actual explanation / "Reach it from …" guidance) is kept verbatim.
+// Make a KB article read as a conversational answer WITHOUT an AI call, while keeping the article's
+// real structure: every section heading (## / ###, e.g. "Get more from SGEN") AND its links are kept
+// verbatim. We only drop genuine redundancy — the top-level TITLE heading (# H1, already conveyed by
+// the summary + source pills), the "**Short answer:**" line (it just repeats the summary we lead
+// with), and a trailing "Source:" line (redundant with the source pills the UI renders).
 function articleBody(content: string | null): string {
   if (!content) return '';
   const kept = content.split('\n').filter((raw) => {
     const line = raw.trim();
-    if (/^#{1,6}\s/.test(line)) return false; // markdown heading
+    if (/^#\s/.test(line)) return false; // drop ONLY the H1 title — keep ## / ### section headings
     if (/^\*\*short answer:?\*\*/i.test(line)) return false; // duplicate of the summary
-    if (/^\[[^\]]+\]\([^)]+\)$/.test(line)) return false; // standalone [label](url) link line
     if (/^source\s*:/i.test(line)) return false; // redundant with the source pills the UI renders
     return true;
   });
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// For a STEP-based article the structured steps already render as the interactive stepper, so we
+// don't re-list them as text. This pulls out the article's OTHER main content — intro/extra prose,
+// the "Reach it from …" guidance, trailing sections like "### Get more from SGEN", and links — by
+// dropping the article's own title heading, the "**Short answer:**" line, and the "**Steps:**"
+// numbered list. Returns '' when nothing but the steps/summary remain (thin KB cards add nothing).
+function walkthroughExtra(content: string | null): string {
+  if (!content) return '';
+  const out: string[] = [];
+  let droppedTitle = false;
+  let inSteps = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (!droppedTitle && /^#{1,6}\s/.test(line)) {
+      droppedTitle = true; // the article's own title heading (later headings like "### Get more…" stay)
+      continue;
+    }
+    if (/^\*\*short answer:?\*\*/i.test(line)) continue; // = the summary we already lead with
+    if (/^source\s*:/i.test(line)) continue;
+    if (/^\*\*related:?\*\*/i.test(line)) continue; // redundant with the Related/source pills the UI renders
+    if (/^\*\*you might also ask about:?\*\*/i.test(line)) continue; // redundant with the follow-up buttons
+    if (/^\*\*steps:?\*\*/i.test(line)) {
+      inSteps = true; // the steps render in the stepper, not as a duplicate numbered list
+      continue;
+    }
+    if (inSteps) {
+      if (line === '' || /^\d+\.\s/.test(line)) continue;
+      inSteps = false; // first non-step line ends the steps block
+    }
+    out.push(raw);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export interface ChatResult {
@@ -211,12 +221,10 @@ export async function chat(message: string, _history?: ChatMessage[]): Promise<C
     }
   }
 
-  // 2) Is the local result CLEAR enough to answer on its own, or do we hand it to the AI?
-  // CLEAR = a confident top vector match clearly ahead of the runner-up → answer with ZERO AI
-  // calls. Otherwise (ambiguous OR low local confidence but we DO have candidates) let the AI
-  // rerank judge which candidate actually fits. Short queries like "logo" score low on vector
-  // similarity even though the right article is in the candidate list, so a bare similarity
-  // threshold must NOT reject them — the AI is the better judge (and declines if truly irrelevant).
+  // 2) Is the local result CLEAR enough to answer with ONE article? CLEAR = a confident top cosine
+  // (vector) match clearly ahead of the runner-up → answer from it. Otherwise (ambiguous, or low
+  // confidence but we DO have candidates) we show "multiple results" to pick from, or answer from the
+  // local top if it clears the floor, or fall back to suggestions when nothing is confident. No AI.
   // topVec/secondVec use the ACTUAL vector similarities — NOT result.confidence, which falls back
   // to a flat 0.5 baseline for keyword-only matches and would falsely look "clear".
   const localConfident = !!primary && result.confidence >= MIN_CONFIDENCE;
@@ -232,17 +240,17 @@ export async function chat(message: string, _history?: ChatMessage[]): Promise<C
       topVecSim >= STRONG_CONFIDENCE ||
       (topVecSim >= CLEAR_CONFIDENCE && topVecSim - secondVecSim >= AMBIGUITY_GAP));
 
-  // Gate telemetry: shows whether a query was answered locally (free) or escalated to the AI.
+  // Gate telemetry: which deterministic path a query took (single answer / multiple results / none).
   console.log(
     `[chat:gate] q=${JSON.stringify(message)} top=${topVecSim.toFixed(3)} second=${secondVecSim.toFixed(3)} ` +
       `gap=${(topVecSim - secondVecSim).toFixed(3)} cands=${result.candidates.length} clear=${clearMatch} -> ` +
-      (clearMatch ? 'LOCAL (no AI)' : result.candidates.length ? 'AI rerank' : 'no-answer'),
+      (clearMatch ? 'single' : result.candidates.length ? 'multiple/local-top' : 'no-answer'),
   );
 
   // AMBIGUOUS → MULTIPLE RESULTS (no AI). If there's no clear single winner but several articles are
   // plausibly relevant, show them all and let the user pick — rather than confidently answering from
   // one possibly-wrong article (e.g. "Who can access Sites?" matching "…Site Settings"). This is
-  // KB-grounded and needs zero AI, so it works even while the AI rerank provider is rate-limited.
+  // KB-grounded and needs zero AI — no external provider, no rate limits, scales on local compute.
   if (!answered && !clearMatch) {
     const plausible = result.candidates
       .map((c) => ({ c, sim: result.topMatches.find((m) => m.id === c.id)?.similarity ?? 0 }))
@@ -277,35 +285,11 @@ export async function chat(message: string, _history?: ChatMessage[]): Promise<C
     supporting = [];
     answered = true;
   } else if (!answered && result.candidates.length > 0) {
-    // Not clear → let the AI pick the right article from the candidates (or decline). This is
-    // what rescues low-confidence-but-relevant queries the similarity floor would wrongly drop.
-    try {
-      const pickedIds = await rerankArticles(message, result.candidates);
-      const byId = new Map(result.candidates.map((a) => [a.id, a]));
-      const chosen = pickedIds
-        .map((id) => byId.get(id))
-        .filter((a): a is (typeof result.candidates)[number] => Boolean(a));
-      console.log(
-        '[chat:rerank] picked:',
-        chosen.map((a) => a.feature || a.title).join(' | ') || '(none)',
-      );
-      if (chosen.length) {
-        primary = chosen[0];
-        supporting = chosen.slice(1, 3);
-        answered = true; // the AI vouched for this match
-      }
-      // chosen empty → the AI judged that none of the candidates answer it → no answer.
-    } catch (err) {
-      // AI unavailable — fall back to the local top ALONE (drop supporting) if it clears the
-      // confidence floor. Collapsing supporting keeps articles.length===1 so we answer directly
-      // from the KB instead of attempting a second, equally-doomed compose call on the dead provider.
-      console.warn(
-        '[chat:rerank] FAILED -> local fallback:',
-        err instanceof Error ? err.message : err,
-      );
-      supporting = [];
-      answered = localConfident;
-    }
+    // No clear single winner — and NO AI. Answer from the local cosine-similarity top match when it
+    // clears the confidence floor; otherwise leave it unanswered so the no-answer branch below
+    // offers the closest candidates as clickable suggestions. Fully deterministic, zero API calls.
+    supporting = [];
+    answered = localConfident;
   }
 
   if (!answered || !primary) {
@@ -444,11 +428,19 @@ export async function chat(message: string, _history?: ChatMessage[]): Promise<C
       }
     }
 
+    // The article's OTHER main content — intro/extra prose, links, and trailing sections like
+    // "### Get more from SGEN" — carried as the walkthrough FOOTER so the UI renders it AFTER the
+    // steps (answer → steps → extras). The steps themselves stay in the interactive stepper.
+    const footer = withSteps
+      .map((a) => walkthroughExtra(a.content))
+      .filter(Boolean)
+      .join('\n\n');
     const walkthrough: Walkthrough = {
       title: topics.join(' + '),
       steps,
       source: withSteps.map((a) => a.title).join(', '),
       focusStep,
+      ...(footer ? { footer } : {}),
     };
     let reply =
       topics.length > 1
